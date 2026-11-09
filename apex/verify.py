@@ -198,8 +198,10 @@ def _checks(store: Store, cfg: VerifyConfig, since: float, now: float) -> list[d
         checks.append(_check(
             "pnl", abs(pnl - delta) <= tol,
             f"closed P&L {pnl:+.2f} vs equity change {delta:+.2f} "
-            f"(tolerance ±{tol:.2f})",
-            severity="fail" if cfg.live else "warn",
+            f"(tolerance ±{tol:.2f})" +
+            ("" if cfg.live else " — a paper restart resets the simulated balance, "
+                                 "so this only reconciles across a continuous account"),
+            severity="fail" if cfg.live else "info",
             data={"pnl": round(pnl, 2), "equity_delta": round(delta, 2)}))
 
     # 4. rejections are typed and explainable --------------------------------
@@ -268,9 +270,17 @@ def _checks(store: Store, cfg: VerifyConfig, since: float, now: float) -> list[d
 
 # --------------------------------------------------------------------------- #
 def render_verify(report: dict) -> str:
+    checks = report["checks"]
+    passed = sum(1 for c in checks if c["ok"])
+    warn = sum(1 for c in checks if not c["ok"] and c["severity"] == "warn")
+    info = sum(1 for c in checks if not c["ok"] and c["severity"] == "info")
+    tally = f"{passed}/{len(checks)} passed"
+    if warn:
+        tally += f" · {warn} warning(s)"
+    if info:
+        tally += f" · {info} informational"
     lines = [f"# apex verify — {os.path.basename(report.get('db', ''))}", "",
-             f"**{'PASS' if report['ok'] else 'FAIL'}** · "
-             f"{sum(1 for c in report['checks'] if c['ok'])}/{len(report['checks'])} checks ok", ""]
+             f"**{'PASS' if report['ok'] else 'FAIL'}** · {tally}", ""]
     if report.get("failures"):
         lines += [f"Blockers: {', '.join(report['failures'])}", ""]
     if report.get("warnings"):

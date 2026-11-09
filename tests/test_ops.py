@@ -289,6 +289,8 @@ class TestVerify(unittest.TestCase):
         report = verify_run(VerifyConfig(db_path=self.db))
         self.assertTrue(report["ok"], report["failures"])
         self.assertIn("PASS", render_verify(report))
+        # paper runs cannot reconcile P&L across a simulated restart: informational
+        self.assertEqual(next(c for c in report["checks"] if c["name"] == "pnl")["severity"], "info")
 
     def test_unprotected_position_fails_the_stop_check(self):
         store = Store(self.db)
