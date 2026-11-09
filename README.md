@@ -57,7 +57,7 @@ python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
 # 6. tests
-python3 -m unittest discover -s tests      # 247 tests
+python3 -m unittest discover -s tests      # 259 tests
 ```
 
 ---
@@ -69,7 +69,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **247 tests pass** in ~13 s |
+| Test suite | `python3 -m unittest discover -s tests` | **259 tests pass** in ~13 s |
 | Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
 | Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
 | Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
@@ -95,6 +95,7 @@ remains unreachable without a genuine edge — exactly the honest state of affai
 | Deriv market data + contract execution | **Implemented to API spec, unverified live** | `apex/data/deriv.py`, `apex/execution/deriv.py`; protocol tests against a fake socket |
 | FP Markets MT5 data + execution | **Implemented to API spec, unverified live** | `apex/data/mt5.py`, `apex/execution/mt5.py`; tests against a fake terminal |
 | Journal + full attribution | **Working** | `apex/store.py`; dashboard, reports |
+| Order prices journalled (`requested_price`) and reconciled by `(symbol, ticket)` | **Working** | `orders` table, `router.reconcile`; `tests/test_reconciliation` |
 | Dashboard with rejection reasons and prop progress | **Working** | `apex/api/` |
 | Walk-forward sweep, prop pass-rate simulation | **Working** | `apex/research/optimize.py` |
 | Restart safety: broker book adopted/flattened on boot | **Working** | `engine.boot_sync`, `tests/test_live.py` |
@@ -263,7 +264,7 @@ apex/
 docs/                architecture, audit response, prop playbook, deployment, research
 .github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
-tests/               247 unit + integration tests
+tests/               259 unit + integration tests
 ```
 
 ---

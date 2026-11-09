@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -82,6 +83,50 @@ class TestStore(unittest.TestCase):
         self.store.record_order(o, ack)
         self.store.record_event("entry", "opened R_25")
         self.assertEqual(self.store.recent_events()[0]["message"], "opened R_25")
+
+    def test_requested_price_is_a_column_not_just_json(self):
+        """The audit's "prices agree" step needs the intended price in SQL."""
+        o = Order(symbol="R_25", side=Side.BUY, lots=1.0, broker="deriv",
+                  account="A", price=2400.5)
+        ack = Ack(ok=True, client_id=o.client_id, ts=5.0, order_id="X",
+                  filled_price=2401.0, lots=1.0)
+        self.store.record_order(o, ack)
+        row = self.store.conn.execute(
+            "SELECT requested_price, filled_price, order_json FROM orders").fetchone()
+        self.assertEqual(row["requested_price"], 2400.5)
+        self.assertEqual(row["filled_price"], 2401.0)
+        self.assertEqual(json.loads(row["order_json"])["price"], 2400.5)
+
+    def test_an_old_journal_gains_the_new_column_on_open(self):
+        """Upgrades are not optional for the operator: migrate, do not refuse."""
+        import sqlite3
+        path = os.path.join(self.tmp, "old.db")
+        old = sqlite3.connect(path)
+        old.executescript(
+            "CREATE TABLE orders (client_id TEXT PRIMARY KEY, ts REAL, broker TEXT,"
+            " account TEXT, symbol TEXT, side TEXT, lots REAL, strategy TEXT, ok INTEGER,"
+            " filled_price REAL, reason TEXT, order_json TEXT, ack_json TEXT);")
+        old.execute("INSERT INTO orders (client_id, ts, order_json) VALUES ('c1', 1.0, '{}')")
+        old.commit()
+        old.close()
+
+        store = Store(path)
+        try:
+            cols = {r[1] for r in store.conn.execute("PRAGMA table_info(orders)")}
+            self.assertIn("requested_price", cols)
+            o = Order(symbol="R_25", side=Side.SELL, lots=2.0, broker="deriv",
+                      account="A", price=99.5)
+            store.record_order(o, Ack(ok=True, client_id=o.client_id, ts=2.0,
+                                      order_id="Y", filled_price=99.0, lots=2.0))
+            row = store.conn.execute(
+                "SELECT requested_price, symbol FROM orders WHERE client_id=?",
+                (o.client_id,)).fetchone()
+            self.assertEqual(row["requested_price"], 99.5)
+            self.assertEqual(row["symbol"], "R_25")
+            self.assertEqual(store.conn.execute(
+                "SELECT COUNT(*) c FROM orders").fetchone()["c"], 2)   # old row kept
+        finally:
+            store.close()
 
     def test_signal_stats(self):
         for status in ("NO_STRUCTURE", "NO_STRUCTURE", "ENTERED"):

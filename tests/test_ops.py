@@ -422,6 +422,71 @@ class TestPartialClose(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# the order carries the price it is expected to fill at
+# --------------------------------------------------------------------------- #
+class TestOrderPriceOnTheWire(unittest.TestCase):
+    """Deriv refuses an order without a price, and "prices agree" needs one stored.
+
+    Before this, `Order.price` was never set by the engine at all: live Deriv
+    submission failed with "entry price required for Deriv contracts" and the
+    journal could not answer the deployment checklist's step 2.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store = Store(os.path.join(self.tmp, "apex.db"))
+        reg = SymbolRegistry()
+        self.sim = SimBroker(registry=reg, cfg=SimConfig(seed=3, slippage_bps=0.0))
+        self.now = 1_700_000_000.0
+        self.sim.set_time(self.now)
+        self.router = BrokerRouter([Route(broker="deriv", account=self.sim.account_id,
+                                         port=self.sim, symbols=["R_25", "R_50"])],
+                                   store=self.store)
+        self.engine = TradingEngine(
+            router=self.router, symbols_by_broker={"deriv": ["R_25", "R_50"]},
+            cfg=EngineConfig(warmup_bars=10), prop=None,
+            risk=RiskConfig(), store=self.store, now=self.now)
+        q = Quote("R_25", self.now, 2399.5, 2400.5)
+        self.sim.set_quote(q)
+        self.engine.set_quote(q)
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_the_order_is_sent_at_the_touch_not_the_mid(self):
+        self.engine._try_enter(_candidate(symbol="R_25", price=2400.0),
+                              self.router.spec("R_25"), self.now, {"why": "test"})
+        self.assertEqual(len(self.sim.fills), 1)
+        spec = self.router.spec("R_25")
+        expected = self.engine.states["R_25"].last_quote.ask
+        self.assertAlmostEqual(expected, 2400.5, places=6)
+        # the sim fills at the ask it was quoted, so entry == expected fill
+        self.assertAlmostEqual(self.sim.fills[0].filled_price, 2400.5, places=6)
+        self.assertEqual(len(self.engine.positions), 1)
+
+    def test_the_journal_stores_the_requested_price(self):
+        self.engine._try_enter(_candidate(symbol="R_25", price=2400.0),
+                              self.router.spec("R_25"), self.now, {"why": "test"})
+        row = self.store.conn.execute(
+            "SELECT requested_price, filled_price, order_json FROM orders").fetchone()
+        self.assertAlmostEqual(row["requested_price"], 2400.5, places=6)
+        self.assertIsNotNone(row["filled_price"])
+        self.assertAlmostEqual(json.loads(row["order_json"])["price"], 2400.5, places=6)
+
+    def test_slippage_is_measured_against_the_stored_price(self):
+        """No signal fallback needed: the journal answers on its own."""
+        for _ in range(3):
+            self.engine._try_enter(_candidate(symbol="R_25", price=2400.0),
+                                  self.router.spec("R_25"), self.now, {"why": "test"})
+            pos = next(iter(self.engine.positions.values()))
+            self.engine.close_position(pos, ExitReason.MANUAL, 2401.0, "test")
+        report = verify_run(VerifyConfig(db_path=os.path.join(self.tmp, "apex.db")))
+        prices = next(c for c in report["checks"] if c["name"] == "prices")
+        self.assertEqual(prices["data"]["n"], 3)
+        self.assertLess(abs(prices["data"]["mean_bps"]), 1.0)
+
+
+# --------------------------------------------------------------------------- #
 # portfolio heat and per-symbol sessions
 # --------------------------------------------------------------------------- #
 def _spec(symbol="R_25") -> SymbolSpec:

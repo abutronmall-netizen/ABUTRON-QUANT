@@ -118,7 +118,7 @@ def make_handler(state: DashboardState):
                 return self._json([t.as_dict() for t in tr][-200:])
             if path == "/api/health":
                 return self._json({"ok": True, "uptime_s": round(time.time() - START, 1),
-                                   "version": "2.3.0"})
+                                   "version": "2.3.1"})
             if path == "/api/stream":
                 return self._stream()
             if path.startswith("/static/"):

@@ -197,14 +197,24 @@ second class: failures that look like success from the dashboard.
 | Journal grew without bound | A per-second equity table nobody prunes becomes an unbackupable file | `apex prune`, `--db-retention-days`, `VACUUM`; trades are kept | `test_prune_keeps_trades_and_drops_high_frequency_rows` |
 | Two more silent feed failures | A live socket can still starve bars or report a non-UTC clock | `FeedMonitor`: gap size in bars, drift with the offset | `test_gap_in_bars_is_detected` |
 
-Two defects were found *by* this work, both of the "alarm fatigue" kind:
+Two defects were found *by* this work, both of the "alarm fatigue" kind. Both were only half-fixed
+on the first pass, which is itself the lesson: a fix that stores a field the caller never populates
+looks green and changes nothing.
 
-* `router.reconcile` compared broker labels as well as tickets, so **every paper position** was
-  reported as both `missing_at_broker` and `unknown_at_engine`. A reconciliation alarm that always
-  fires is worse than none: it teaches the operator to ignore the one that matters. Keys are now
-  `(symbol, ticket)`, with a new `lots_mismatch` comparison.
-* `Store.record_order` never persisted the requested price, so slippage could not be measured from
-  the journal at all — the audit's "prices agree" step was unanswerable. It is recorded now.
+* **Reconciliation compared the wrong things.** `router.reconcile` keyed on the broker *label*, so
+  every paper position was reported as both `missing_at_broker` and `unknown_at_engine`. Fixing the
+  key exposed the data underneath it: `DerivBroker.positions()` reported `lots` as
+  `contract["buy_price"]`, i.e. a USD **stake** treated as a lot count, and labelled every contract
+  `BUY` including `MULTDOWN`. Keys are now `(symbol, ticket)`; size is compared exactly for venues
+  that report lots and within 2% where the venue only implies them (`lots_estimated`). A
+  reconciliation alarm that always fires is worse than none — it teaches the operator to ignore the
+  one that matters.
+* **The journal had no requested price, because the order had none.** `Store.record_order` wrote
+  `order.price`; the engine never set it. That made the audit's "prices agree" step unanswerable
+  *and* meant live Deriv submission could never succeed, since the adapter refuses an order without
+  an entry price. Orders now carry the expected fill price (the touch on the traded side), the
+  journal stores it in a migrated `orders.requested_price` column, and `apex verify` measures
+  slippage against it directly.
 
 ---
 

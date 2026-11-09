@@ -5,7 +5,7 @@ from apex.execution.base import SymbolRegistry
 from apex.execution.mt5 import MT5Broker
 from apex.execution.router import BrokerRouter, Route
 from apex.execution.sim import SimBroker, SimConfig
-from apex.models import Order, OrderKind, Position, Quote, Side
+from apex.models import AccountState, Order, OrderKind, Position, Quote, Side
 from apex.data.mt5 import MT5Config, MT5Connection
 
 
@@ -148,6 +148,88 @@ class TestRouter(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+class TestReconciliation(unittest.TestCase):
+    """The reconciliation alarm must mean something, or nobody reads it.
+
+    Regression tests for a defect that made *every* paper position report both
+    `missing_at_broker` and `unknown_at_engine`: the comparison keyed on the
+    broker label, and the engine labels a routed position with the route name
+    ("deriv") while a simulated adapter reports its own ("sim").
+    """
+
+    def _router(self, port, label="deriv", symbols=("R_25", "R_50")):
+        return BrokerRouter([Route(broker=label, account=port.account_id, port=port,
+                                   symbols=list(symbols))])
+
+    def _pos(self, pid="P1", symbol="R_25", lots=1.0, broker="deriv", **meta):
+        return Position(id=pid, symbol=symbol, side=Side.BUY, lots=lots, entry=2400.0,
+                        sl=2390.0, tp=2430.0, opened_ts=1.0, broker=broker,
+                        account="ACC", strategy="s", contract_id=pid, meta=dict(meta))
+
+    def test_paper_positions_match_despite_the_broker_label(self):
+        sim = SimBroker(registry=SymbolRegistry(), cfg=SimConfig(seed=1))
+        sim.set_quote(Quote("R_25", 1.0, 2399.5, 2400.5))
+        ack = sim.submit(Order(symbol="R_25", side=Side.BUY, lots=1.0, broker="sim",
+                               account=sim.account_id, price=2400.5))
+        router = self._router(sim)
+        internal = [Position(id=ack.order_id, symbol="R_25", side=Side.BUY, lots=ack.lots,
+                             entry=ack.filled_price, sl=2390.0, tp=2430.0, opened_ts=1.0,
+                             broker="deriv", account=sim.account_id, strategy="s")]
+        self.assertEqual(internal[0].broker, "deriv")
+        self.assertEqual(sim.positions()[0].broker, "sim")
+        self.assertEqual(router.reconcile(internal), [])
+
+    def test_a_real_size_difference_is_still_reported(self):
+        port = FakeBookPort([self._pos(lots=2.0)])
+        router = self._router(port)
+        diffs = router.reconcile([self._pos(lots=1.0)])
+        self.assertEqual([d["type"] for d in diffs], ["lots_mismatch"])
+        self.assertEqual(diffs[0]["broker_lots"], 2.0)
+        self.assertFalse(diffs[0]["estimated"])
+
+    def test_estimated_venue_lots_are_compared_loosely(self):
+        # A Deriv contract reports a stake, so its lot count is an estimate.
+        port = FakeBookPort([self._pos(lots=1.01, lots_estimated=True)])
+        router = self._router(port)
+        self.assertEqual(router.reconcile([self._pos(lots=1.0)]), [])
+        port = FakeBookPort([self._pos(lots=1.5, lots_estimated=True)])
+        diffs = self._router(port).reconcile([self._pos(lots=1.0)])
+        self.assertEqual(diffs[0]["type"], "lots_mismatch")
+        self.assertTrue(diffs[0]["estimated"])
+
+    def test_missing_and_unknown_are_distinguished(self):
+        port = FakeBookPort([self._pos(pid="BROKER", lots=1.0), self._pos(pid="GONE", lots=1.0)])
+        router = self._router(port)
+        internal = [self._pos(pid="ENGINE", lots=1.0), self._pos(pid="GONE", lots=1.0)]
+        types = sorted(d["type"] for d in router.reconcile(internal))
+        self.assertEqual(types, ["missing_at_broker", "unknown_at_engine"])
+
+    def test_two_symbols_with_the_same_ticket_do_not_collide(self):
+        port = FakeBookPort([self._pos(pid="7", symbol="R_25", lots=1.0)])
+        router = self._router(port)
+        internal = [self._pos(pid="7", symbol="R_25", lots=1.0),
+                    self._pos(pid="7", symbol="R_50", lots=1.0)]
+        types = [d["type"] for d in router.reconcile(internal)]
+        self.assertEqual(types, ["missing_at_broker"])     # R_50/7 is not at the broker
+
+
+class FakeBookPort:
+    """Minimal read-only port: reconciliation needs positions() and nothing else."""
+
+    name = "sim"
+
+    def __init__(self, positions):
+        self.account_id = "ACC"
+        self._positions = list(positions)
+
+    def positions(self):
+        return list(self._positions)
+
+    def account(self):
+        return AccountState(broker="deriv", account="ACC", equity=10_000.0,
+                           balance=10_000.0, free_margin=10_000.0, ts=1.0)
+
+
 class FakeMT5:
     """Minimal stand-in for the MetaTrader5 module (Windows-only in production)."""
     TIMEFRAME_M5 = 5

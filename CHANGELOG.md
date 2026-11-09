@@ -3,6 +3,39 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.3.1 — order prices and reconciliation keys, properly
+
+Two defects from 2.3.0 were only half-fixed. Both are about the evidence an
+operator is asked to trust.
+
+**The requested price never existed.** `Store.record_order` was changed to write
+`order.price` — but the engine never set a price on the order in the first place,
+so every journal row still had `null`. Worse, `DerivBroker.submit` refuses an
+order with no price ("entry price required for Deriv contracts"), so live Deriv
+submission could not have worked at all. Now:
+- `_try_enter` puts the expected fill price on the order: the touch on the traded
+  side (ask for a buy, bid for a sell), with the decision mid kept in `meta`.
+- `orders.requested_price` is a first-class column, migrated onto existing
+  journals on open (`ALTER TABLE`, idempotent, rows preserved).
+- `apex verify` reads that column first, so "prices agree" is answerable directly
+  from SQL rather than reconstructed from a nearby signal row.
+
+**Reconciliation had the right key and the wrong data behind it.** Keying on
+`(symbol, ticket)` stopped the false alarms, but `DerivBroker.positions()` reported
+`lots = float(contract["buy_price"])` — a *stake* treated as a lot count — so every
+live Deriv position would have reported `lots_mismatch` instead. It now inverts
+`_stake_for` (stake × multiplier / (value-per-point × spot)), flags the result
+`lots_estimated`, and reconciliation compares estimated sizes to 2% instead of
+exact. It also stops labelling every contract `BUY`: `MULTDOWN` is a sell.
+
+Regression tests added for all of it: `tests/test_execution.py::TestReconciliation`
+(paper labels, real size mismatch, estimated sizes, missing/unknown, ticket reuse
+across symbols), `tests/test_store.py` (column + old-journal migration),
+`tests/test_ops.py::TestOrderPriceOnTheWire`, `tests/test_protocol.py` (stake is
+not lots, engine orders satisfy Deriv's price requirement).
+
+Tests: 259.
+
 ## 2.3.0 — the desk can now look after itself
 
 The remaining gaps from the audit list. Each item is behaviour that was missing,
@@ -57,7 +90,7 @@ not a refactor.
 - `Store.record_order` did not persist the requested price, which made slippage
   analysis impossible from the journal. It does now.
 
-Tests: 247.
+Tests: 259 (2.3.1 adds the regression tests for the two defects above).
 
 ## 2.2.0 — verified signal layer, AI review, CI
 

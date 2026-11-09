@@ -28,7 +28,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 
 CREATE TABLE IF NOT EXISTS orders (
   client_id TEXT PRIMARY KEY, ts REAL, broker TEXT, account TEXT, symbol TEXT, side TEXT,
-  lots REAL, strategy TEXT, ok INTEGER, filled_price REAL, reason TEXT, order_json TEXT, ack_json TEXT
+  lots REAL, strategy TEXT, ok INTEGER, filled_price REAL, reason TEXT, order_json TEXT, ack_json TEXT,
+  requested_price REAL          -- the price the engine expected to fill at
 );
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 
@@ -70,7 +71,20 @@ class Store:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         with self._lock:
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.commit()
+
+    #: columns added after the first release; old journals gain them on open
+    _ADDED_COLUMNS = (("orders", "requested_price", "REAL"),)
+
+    def _migrate(self) -> None:
+        """Additive, idempotent migrations. A journal from an older build must
+        keep working: operators do not get to choose when they upgrade."""
+        for table, column, sql_type in self._ADDED_COLUMNS:
+            existing = {row[1] for row in
+                        self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
     def close(self) -> None:
         with self._lock:
@@ -99,7 +113,8 @@ class Store:
         with self._lock:
             self.conn.execute(
                 "INSERT OR REPLACE INTO orders (client_id,ts,broker,account,symbol,side,lots,"
-                "strategy,ok,filled_price,reason,order_json,ack_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "strategy,ok,filled_price,reason,order_json,ack_json,requested_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (order.client_id, ack.ts, order.broker, order.account, order.symbol,
                  order.side.value, order.lots, order.strategy, 1 if ack.ok else 0,
                  ack.filled_price, ack.reason,
@@ -109,7 +124,8 @@ class Store:
                              "requested_lots": order.lots,
                              "sl": order.sl, "tp": order.tp,
                              "tag": order.tag, "meta": order.meta}, default=str),
-                 json.dumps({"order_id": ack.order_id, "retryable": ack.retryable}, default=str)))
+                 json.dumps({"order_id": ack.order_id, "retryable": ack.retryable}, default=str),
+                 order.price))
             self.conn.commit()
 
     def record_trade(self, t: TradeRecord) -> None:

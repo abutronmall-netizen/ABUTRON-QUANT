@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abutron-quant"
-version = "2.3.0"
+version = "2.3.1"
 description = "ABUTRON QUANT — one-decision-engine scalping desk for Deriv synthetics and FP Markets MT5, with a prop-firm rule guard."
 readme = "README.md"
 requires-python = ">=3.10"

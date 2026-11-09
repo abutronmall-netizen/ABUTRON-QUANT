@@ -217,6 +217,36 @@ class TestDerivBrokerSafety(unittest.TestCase):
         self.assertFalse(ack.ok)
         self.assertTrue(ack.retryable)
 
+    def test_portfolio_stake_is_not_treated_as_lots(self):
+        """A Deriv contract has a stake, not lots. Reporting buy_price as lots made
+        every live position look like a size mismatch against the engine."""
+        class StubAPI:
+            def portfolio(self):
+                return [{"contract_id": 11, "symbol": "R_75", "buy_price": 100.0,
+                         "current_spot": 50000.0, "multiplier": 100,
+                         "contract_type": "MULTDOWN", "purchase_time": 1_700_000_000}]
+
+        class StubRunner:
+            def call(self, coro):        # the stub returns the payload directly
+                return coro
+
+        broker = DerivBroker(account="D-5", api=StubAPI(), dry_run=False,
+                             runner=StubRunner(), multiplier=100.0)
+        pos = broker.positions()[0]
+        # stake 100 * multiplier 100 / (value-per-point 1 * spot 50000) = 0.2 lots
+        self.assertAlmostEqual(pos.lots, 0.2, places=6)
+        self.assertEqual(pos.entry, 50000.0)
+        self.assertEqual(pos.side, Side.SELL)
+        self.assertTrue(pos.meta["lots_estimated"])
+        self.assertEqual(pos.meta["stake"], 100.0)
+
+    def test_engine_order_price_satisfies_deriv_submission(self):
+        """Deriv refuses an order with no price; the engine must always send one."""
+        broker = DerivBroker(account="D-6", dry_run=True)
+        ack = broker.submit(Order(symbol="R_75", side=Side.BUY, lots=1.0, broker="deriv",
+                                  account="D-6", price=48000.0))
+        self.assertTrue(ack.ok)
+
     def test_modify_is_honest_about_being_unsupported(self):
         broker = DerivBroker(account="D-4", dry_run=True)
         pos = broker.submit(Order(symbol="R_75", side=Side.BUY, lots=1.0, broker="deriv",

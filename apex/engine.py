@@ -298,11 +298,19 @@ class TradingEngine:
                 self._reject("AI_VETO", str(note.get("risk_note", "")), cand)
                 return
 
+        # The price the order is expected to fill at: the touch on the traded
+        # side, not the mid. Deriv's adapter refuses an order without a price at
+        # all, and without this the journal cannot answer "prices agree".
+        st = self.states.get(cand.symbol)
+        q = st.last_quote if st is not None else None
+        ref_price = (q.ask if cand.side is Side.BUY else q.bid) if q is not None else cand.price
         order = Order(
             symbol=cand.symbol, side=cand.side, lots=lots, broker=route.broker,
-            account=route.account, strategy=self.strategy.name, sl=cand.sl, tp=cand.tp,
+            account=route.account, strategy=self.strategy.name, price=float(ref_price),
+            sl=cand.sl, tp=cand.tp,
             ttl_s=cand.ttl_s, tag=f"conv={cand.conviction:.2f}",
-            meta={"conviction": cand.conviction, "regime": cand.regime},
+            meta={"conviction": cand.conviction, "regime": cand.regime,
+                  "decision_mid": cand.price},
         )
         ack = self.router.submit(order)
         self.orders_sent += 1

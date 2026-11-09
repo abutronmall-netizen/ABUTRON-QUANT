@@ -156,7 +156,10 @@ def _checks(store: Store, cfg: VerifyConfig, since: float, now: float) -> list[d
         ref.setdefault(row[1], []).append((float(row[0]), float(row[2])))
     slips = []
     for o in filled:
-        req = float(o["order_json"].get("price") or 0.0)
+        # First-class column (v2.3.1+), then the JSON the order was recorded with,
+        # then the engine's decision price from a nearby signal row.
+        req = float(o.get("requested_price") or 0.0) or \
+            float(o["order_json"].get("price") or 0.0)
         got = float(o["filled_price"] or 0.0)
         if req <= 0:
             for sts, spx in reversed(ref.get(o["symbol"], [])):

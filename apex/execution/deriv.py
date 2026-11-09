@@ -114,16 +114,41 @@ class DerivBroker:
         contracts = self._runner.call(self.api.portfolio())
         out = []
         for c in contracts:
+            symbol = c.get("symbol", "")
+            stake = float(c.get("buy_price") or 0.0)
+            spot = float(c.get("current_spot") or 0.0)
+            lots, estimated = self._lots_from_contract(symbol, stake, spot,
+                                                       c.get("multiplier"))
             out.append(Position(
-                id=str(c.get("contract_id")), symbol=c.get("symbol", ""),
-                side=Side.BUY, lots=float(c.get("buy_price", 0) or 0),
-                entry=float(c.get("buy_price", 0) or 0), sl=None, tp=None,
+                id=str(c.get("contract_id")), symbol=symbol,
+                # The portfolio endpoint does not say whether the contract is long
+                # or short. Guessing BUY here used to mislabel every MULTDOWN.
+                side=(Side.SELL if str(c.get("contract_type", "")).upper().startswith("MULTDOWN")
+                      else Side.BUY),
+                lots=lots, entry=spot or stake, sl=None, tp=None,
                 opened_ts=float(c.get("purchase_time", time.time())),
                 broker="deriv", account=self.account_id, strategy="deriv",
                 contract_id=str(c.get("contract_id")),
-                meta={"raw": c},
+                # `estimated` tells reconciliation to compare lots loosely: a
+                # Deriv contract has a stake, not a lot count, and buy_price is
+                # the stake. Treating it as lots made every live position look
+                # like a size mismatch.
+                meta={"raw": c, "stake": stake, "lots_estimated": estimated},
             ))
         return out
+
+    def _lots_from_contract(self, symbol: str, stake: float, spot: float,
+                            multiplier) -> tuple[float, bool]:
+        """Invert `_stake_for`: stake -> notional lots. Always an estimate."""
+        try:
+            mult = float(multiplier or self.multiplier)
+        except (TypeError, ValueError):
+            mult = self.multiplier
+        spec = self.spec(symbol) if symbol else None
+        vpp = spec.value_per_point_per_lot if spec is not None else 0.0
+        if stake > 0 and spot > 0 and vpp > 0 and mult > 0:
+            return round(stake * mult / (vpp * spot), 6), True
+        return 0.0, True
 
     # ------------------------------------------------------------------ #
     def _stake_for(self, order: Order, price: float) -> float:

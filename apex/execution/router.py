@@ -235,9 +235,19 @@ class BrokerRouter:
             if other is None:
                 diffs.append({"type": "missing_at_broker", "symbol": p.symbol,
                               "id": p.id, "lots": p.lots})
-            elif abs(float(other.lots) - float(p.lots)) > 1e-6:
-                diffs.append({"type": "lots_mismatch", "symbol": p.symbol, "id": p.id,
-                              "lots": p.lots, "broker_lots": other.lots})
+            else:
+                # A venue that reports a stake rather than lots (Deriv multiplier
+                # contracts) can only estimate size; compare it loosely and say so,
+                # instead of crying mismatch on every position.
+                estimated = bool(other.meta.get("lots_estimated") or
+                                 p.meta.get("lots_estimated"))
+                delta = abs(float(other.lots) - float(p.lots))
+                base = max(abs(float(other.lots)), abs(float(p.lots)), 1e-9)
+                tol = (0.02 * base) if estimated else 1e-6
+                if delta > tol:
+                    diffs.append({"type": "lots_mismatch", "symbol": p.symbol,
+                                  "id": p.id, "lots": p.lots, "broker_lots": other.lots,
+                                  "estimated": estimated})
         for key, p in broker_pos.items():
             if key not in internal_keys:
                 diffs.append({"type": "unknown_at_engine", "symbol": p.symbol,
