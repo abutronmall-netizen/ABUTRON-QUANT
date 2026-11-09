@@ -163,6 +163,26 @@ one scoring real outcomes.
 
 ---
 
+## Phase 2 — the operational defects the audit implied but did not name
+
+The audit was an analysis of a trading failure. Running the rebuilt engine unattended exposed a
+second class: failures that look like success from the dashboard.
+
+| Defect | Consequence before the fix | Fix | Test |
+| --- | --- | --- | --- |
+| The process restarts with positions open | Engine thinks it is flat, opens a second position on the same symbol, leaves the first unmanaged | `boot_sync()` adopts the broker book (or flattens it), idempotently | `test_adopts_position_the_broker_already_holds` |
+| Risk/prop state lived only in memory | A crash at 14:00 refunds the daily loss budget and the challenge counters | `runtime_state` journal + `import_state` before the first bar | `test_state_survives_restart` |
+| Risk reset at UTC midnight, prop at the firm's hour | Two daily budgets inside one firm day | Shared `session_day(ts, reset_hour)` | `test_risk_day_boundary_uses_firm_reset_hour` |
+| Deriv socket dies quietly | Dashboard green, nothing trades, nobody is told | Staleness → backoff → resubscribe → resync | `test_reconnects_with_exponential_backoff` |
+| MT5 timestamps are server time | Session windows and EOD flat fire 2–3 h early | Offset detected and stripped at the adapter | `test_detects_a_two_hour_ahead_server` |
+| Control endpoints unauthenticated | Anyone who can reach the port flattens the account | Token + same-origin check + localhost default | `test_control_requires_token` |
+| Static handler stripped `..` | `//etc/passwd` escaped the asset root (real vulnerability) | Resolve-then-verify path containment | `test_path_traversal_is_blocked` |
+| `PROP_NEWS` had no data source | A documented rule that never fired | Economic calendar + `--news` | `test_guard_blocks_inside_a_news_window` |
+| Slippage studied only on synthetic quotes | Cost model disconnected from reality | Tick capture + replay through the same engine | `test_tick_replay_drives_the_production_engine` |
+| LLM reviewer documented but unwired — and broken | Two years of "AI layer" that never ran | Wired into the entry path, fail-open, advisory by default, `str.format` bug fixed | `tests/test_ai.py` |
+
+---
+
 ## What was deliberately **not** built
 
 * A second "research" strategy path (that is how the original divergence started).

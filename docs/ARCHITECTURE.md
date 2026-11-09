@@ -154,6 +154,11 @@ For each closed trade, every agent with |score| ≥ 0.05 that voted in the trade
                          every 30 s: router.reconcile(engine.positions)
 ```
 
+Optional reviewer: `OllamaReviewer` is called *after* risk and prop have sized a trade, receives
+the candidate, the lots and the agent votes, and can only return "allow" or "block". The engine
+itself enforces the configured mode (advisory mode cannot block), and every failure path fails
+open. It is off by default and it never sees an unsigned idea.
+
 Design rules enforced here:
 
 * **The broker is the truth.** On boot the engine adopts what the broker holds; the journal is a
