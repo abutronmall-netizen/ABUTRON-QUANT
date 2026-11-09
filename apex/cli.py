@@ -127,6 +127,7 @@ def cmd_backtest(args) -> int:
         risk=risk, out_dir=out,
         trend_strength=args.trend_strength,
         record=not args.no_record,
+        prefer_cached=not args.synthetic_only,
     )
     print(f"[backtest] {req.symbols_by_broker} bars={req.bars} strategy={req.strategy} "
           f"prop={req.prop_profile or 'none'} seed={req.seed}")
@@ -360,6 +361,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bars", type=int, default=4000)
     sp.add_argument("--seed", type=int, default=7)
     sp.add_argument("--risk-pct", type=float, default=None)
+    sp.add_argument("--synthetic-only", action="store_true",
+                    help="ignore cached candles in data/ and use the synthetic tape")
     sp.add_argument("--no-record", action="store_true")
     sp.set_defaults(func=cmd_backtest)
 

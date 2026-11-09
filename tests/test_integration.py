@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from apex.backtest import BacktestRequest, run_backtest
+from apex.data.deriv import bars_to_csv
+from apex.data.feed import synth_series
 from apex.prop import get_profile
 from apex.risk import RiskConfig
 
@@ -82,6 +84,20 @@ class TestBacktestIntegration(unittest.TestCase):
         if losses:
             # no single loss may dominate the account
             self.assertLess(max(losses), 10_000 * 0.25 / 100 * 3)
+
+    def test_cached_candles_are_replayed(self):
+        from apex.data.feed import synth_series
+        data_dir = os.path.join(self.tmp, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        bars_to_csv(synth_series("R_75", n_bars=900, base_price=48_000, seed=5),
+                    os.path.join(data_dir, "R_75_M5.csv"))
+        res = run_backtest(self._req(symbols_by_broker={"deriv": ["R_75"]}, bars=800,
+                                     data_dir=data_dir, prefer_cached=True, record=False))
+        self.assertGreater(res.metrics["trades"], 0)
+        res_synth = run_backtest(self._req(symbols_by_broker={"deriv": ["R_75"]}, bars=800,
+                                           data_dir=data_dir, prefer_cached=False,
+                                           record=False, seed=11))
+        self.assertNotEqual(res.metrics["pnl"], res_synth.metrics["pnl"])
 
     def test_two_brokers_route_independently(self):
         res = run_backtest(self._req(

@@ -46,6 +46,19 @@ class TestSizing(unittest.TestCase):
         self.assertTrue(d.allowed)
         self.assertLess(d.lots, 20)
 
+    def test_capped_size_reports_actual_risk(self):
+        """A cap must not silently overstate the position's R denominator."""
+        reg = SymbolRegistry()
+        spec = reg.spec("deriv", "R_50")
+        re_ = RiskEngine(RiskConfig(risk_per_trade_pct=0.5, max_lots_per_trade=10.0),
+                         initial_equity=10_000, now=0)
+        d = re_.size(cand(symbol="R_50", price=240.0, sl=239.8), spec, acct())
+        self.assertTrue(d.allowed)
+        self.assertAlmostEqual(d.lots, 10.0)
+        self.assertTrue(d.detail["size_capped"])
+        self.assertAlmostEqual(d.detail["risk_money"], 10.0 * 0.2, places=4)   # actual
+        self.assertAlmostEqual(d.detail["intended_risk"], 50.0, places=2)      # target
+
     def test_zero_stop_rejected(self):
         d = self.re.size(cand(sl=3000.0), self.spec, acct())
         self.assertFalse(d.allowed)

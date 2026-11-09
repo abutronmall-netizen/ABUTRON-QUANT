@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from .data.deriv import bars_from_csv
 from .data.feed import SyntheticConfig, SyntheticFeed, synth_series
 from .engine import EngineConfig, TradingEngine
 from .execution.base import SymbolRegistry
@@ -78,6 +79,8 @@ class BacktestRequest:
     trend_strength: float = 0.35
     vol_scale: float = 1.0
     spread_bps: Optional[float] = None
+    data_dir: str = "data"            # cached candles written by `apex fetch`
+    prefer_cached: bool = True
 
 
 @dataclass
@@ -100,6 +103,13 @@ class BacktestResult:
 
 
 def _series_for(symbol: str, req: BacktestRequest) -> list[Bar]:
+    """Real cached candles when available, otherwise the synthetic control tape."""
+    if req.prefer_cached and req.data_dir:
+        cached = os.path.join(req.data_dir, f"{symbol}_{req.tf}.csv")
+        if os.path.exists(cached):
+            bars = bars_from_csv(symbol, cached)
+            if len(bars) >= 200:
+                return bars[:req.bars] if len(bars) > req.bars else bars
     base = BASE_PRICES.get(symbol, 1000.0)
     vol = VOL_BPS.get(symbol, 6.0) * req.vol_scale
     if symbol.startswith(("BOOM", "CRASH")):

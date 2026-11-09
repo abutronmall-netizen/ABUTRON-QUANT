@@ -27,7 +27,7 @@ class RiskConfig:
     max_trades_per_day: int = 20
     max_consecutive_losses: int = 3
     cooldown_after_loss_s: int = 120
-    max_lots_per_trade: float = 100.0
+    max_lots_per_trade: float = 1000.0   # instrument specs cap this properly
     max_margin_usage_pct: float = 35.0
     min_free_margin_pct: float = 25.0
     max_spread_atr: float = 0.40
@@ -143,14 +143,23 @@ class RiskEngine:
         notional = lots * max(spec.contract_size, spec.value_per_point_per_lot) * cand.price
         margin = (lots * spec.margin_per_lot) if spec.margin_per_lot else \
             notional / max(spec.leverage, 1.0)
+        capped = False
         if margin > acct.free_margin * self.cfg.max_margin_usage_pct / 100.0:
             lots = spec.round_lots(
                 lots * (acct.free_margin * self.cfg.max_margin_usage_pct / 100.0) / max(margin, 1e-9))
+            capped = True
             if lots < spec.min_lot:
                 return Decision.block("MARGIN", "insufficient free margin at minimum lot",
                                       {"margin_needed": round(margin, 2),
                                        "free_margin": round(acct.free_margin, 2)})
-        return Decision.allow(lots, {"risk_money": round(risk_money, 2),
+        # Report the risk the position will ACTUALLY carry. If a cap (lot, margin,
+        # instrument maximum) reduced the size, R-multiples must be computed
+        # against the real exposure - otherwise every capped trade looks like a
+        # smaller winner and a smaller loser than it really was.
+        actual_risk = lots * per_lot_risk
+        return Decision.allow(lots, {"risk_money": round(actual_risk, 2),
+                                     "intended_risk": round(risk_money, 2),
+                                     "size_capped": capped or lots < raw - 1e-9,
                                      "risk_pct": risk_pct,
                                      "stop_distance": stop_dist,
                                      "per_lot_risk": round(per_lot_risk, 6),

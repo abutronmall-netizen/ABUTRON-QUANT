@@ -198,7 +198,7 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex propsim` | challenge pass-rate simulation over many seeds |
 | `apex profiles` | list prop rule sets and their implied risk |
 | `apex doctor` | readiness matrix: credentials, adapters, journal, engine self-test |
-| `apex fetch` | download Deriv candles to CSV for offline research |
+| `apex fetch` | download Deriv candles to `data/<SYM>_<TF>.csv`; backtests use them automatically |
 | `apex report --run runs/bt_x` | summarise a run |
 | `apex ai` | check the optional local LLM reviewer |
 
