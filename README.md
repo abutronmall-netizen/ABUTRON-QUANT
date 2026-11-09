@@ -52,7 +52,7 @@ python3 -m apex backtest --symbols R_25,R_50,R_75 --bars 4000 --prop ftmo_2step
 python3 -m apex propsim --profile ftmo_2step --seeds 12 --bars 4000
 
 # 5. tests
-python3 -m unittest discover -s tests      # 109 tests
+python3 -m unittest discover -s tests      # 111 tests
 ```
 
 ---
@@ -64,7 +64,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **109 tests pass** in ~4 s |
+| Test suite | `python3 -m unittest discover -s tests` | **111 tests pass** in ~4 s |
 | Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
 | Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
 | Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
@@ -230,7 +230,7 @@ apex/
   api/               dashboard server + static UI
   cli.py             command line
 docs/                architecture, audit response, prop playbook, deployment, research
-tests/               109 unit + integration tests
+tests/               111 unit + integration tests
 ```
 
 ---
