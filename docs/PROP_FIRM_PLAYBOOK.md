@@ -24,7 +24,7 @@ This system does not promise a pass. It guarantees three things instead:
 | Calendar limit | `max_calendar_days` | breach on timeout, as firms do |
 | Consistency | `consistency_pct` | best day's profit ≤ X% of total profit; also blocks adding risk to a day that already dominates |
 | Stop-loss mandatory | `stop_loss_required` | entry rejected without a bracket |
-| News blackout | `news_blackout_minutes` | entry rejected inside the window |
+| News blackout | `news_blackout_minutes` | entry rejected inside the window; windows come from a real calendar (`apex news --file cal.json`, `--news cal.json`) |
 | Weekend / EOD flat | `weekend_flat`, `daily_reset_hour_utc` | force-flatten before the reset boundary and into the Friday close |
 | Lot cap | `max_lots` | **exposure-scaled** (see below) |
 | Trades per day | `max_trades_per_day` | overtrading is the most common self-inflicted breach |
@@ -143,6 +143,9 @@ Reading it correctly:
 4. On a daily halt, the engine flattens and stops for the day. That is the system working.
    Do not re-arm to recover.
 5. When the target is hit, the guard stops opening risk and waits for `min_trading_days`.
+6. Restart the process on purpose once, on demo, with a position open. It must come back with the
+   same position, the same halt state and the same daily budget. `tests/test_live.py` encodes this;
+   if it fails on your machine, do not run a challenge on it.
 
 ## Hard truths
 

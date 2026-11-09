@@ -53,6 +53,8 @@ class DerivConfig:
     token: str = ""
     currency: str = "USD"
     endpoint: str = ""
+    stale_after_s: float = 90.0    # no message for this long -> socket is dead
+    max_reconnects: int = 50
 
     @property
     def url(self) -> str:
@@ -77,26 +79,43 @@ class DerivAPI:
         self.authorized = False
         self.logged_in = ""
         self.last_balance = 0.0
+        self.closed = True                 # becomes False once connected
+        self.last_message_ts = 0.0
+        self.reconnects = 0
         self.currency = self.cfg.currency
 
     # ------------------------------------------------------------------ #
+    @property
+    def alive(self) -> bool:
+        """A socket that streams nothing for `stale_after_s` is dead, not quiet."""
+        if self.closed or self._ws is None:
+            return False
+        return (time.time() - self.last_message_ts) < self.cfg.stale_after_s
+
     async def connect(self) -> None:
         self._ws = self._ws_factory(self.cfg.url)
         await self._ws.connect()
+        self.closed = False
+        self.last_message_ts = time.time()
         self._reader_task = asyncio.create_task(self._read_loop())
         if self.cfg.token:
             await self.authorize(self.cfg.token)
 
     async def close(self) -> None:
+        self.closed = True
         if self._reader_task:
             self._reader_task.cancel()
         if self._ws:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
 
     async def _read_loop(self) -> None:
         assert self._ws is not None
         try:
             async for raw in self._ws.messages():
+                self.last_message_ts = time.time()
                 try:
                     msg = json.loads(raw)
                 except ValueError:

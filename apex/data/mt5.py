@@ -44,6 +44,7 @@ class MT5Config:
     magic: int = 20261109
     deviation: int = 20         # max slippage in points
     filling_type: str = "IOC"   # IOC | FOK | RETURN
+    server_utc_offset_hours: Optional[float] = None   # None -> auto-detect on connect
 
 
 class MT5Connection:
@@ -54,6 +55,51 @@ class MT5Connection:
         self._mt5 = module
         self.connected = False
         self.last_error = ""
+        # MT5 timestamps are in BROKER SERVER time (usually UTC+2/+3), not UTC.
+        # Everything above this layer is UTC, so the offset is removed here.
+        # Sign convention: offset_s = server_time - utc_time (positive = ahead),
+        # matching the `server_utc_offset_hours` config field.
+        self.offset_s: float = float((self.cfg.server_utc_offset_hours or 0.0) * 3600)
+
+    # ------------------------------------------------------------------ #
+    def detect_offset(self, symbol: Optional[str] = None) -> float:
+        """Infer the broker's UTC offset from a live tick.
+
+        A tick stamped an hour in the future is not a clock bug in the engine: it
+        is server time. We snap to 15-minute granularity and refuse to guess from
+        stale ticks (weekend, market closed) or absurd deltas.
+        """
+        if self.cfg.server_utc_offset_hours is not None:
+            self.offset_s = float(self.cfg.server_utc_offset_hours * 3600)
+            return self.offset_s
+        try:
+            symbols = [symbol] if symbol else [s.name for s in (self.mt5.symbols_get() or [])][:20]
+            for sym in symbols:
+                t = self.mt5.symbol_info_tick(sym)
+                if t is None or not getattr(t, "time", 0):
+                    continue
+                delta = float(t.time) - time.time()
+                if abs(delta) > 18 * 3600:      # stale tick or wrong symbol: not a timezone
+                    continue
+                snapped = round(delta / 900.0) * 900.0
+                if abs(snapped) <= 15 * 3600:
+                    self.offset_s = snapped
+                    return self.offset_s
+        except Exception:
+            pass
+        return self.offset_s
+
+    def to_utc(self, ts: float) -> float:
+        """Server timestamp -> UTC epoch."""
+        return float(ts) - self.offset_s
+
+    def to_server(self, ts: float) -> float:
+        """UTC epoch -> server timestamp."""
+        return float(ts) + self.offset_s
+
+    @property
+    def offset_hours(self) -> float:
+        return round(self.offset_s / 3600.0, 2)
 
     # ------------------------------------------------------------------ #
     @property
@@ -87,6 +133,7 @@ class MT5Connection:
         if info is None:
             raise MT5Error(f"account_info unavailable: {mt5.last_error()}")
         self.connected = True
+        self.detect_offset()
         return True
 
     def shutdown(self) -> None:
@@ -129,7 +176,7 @@ class MT5Connection:
             raise MT5Error(f"copy_rates failed for {symbol}: {mt5.last_error()}")
         out: list[Bar] = []
         for r in arr:
-            out.append(Bar(symbol=symbol, ts=float(r["time"]), open=float(r["open"]),
+            out.append(Bar(symbol=symbol, ts=self.to_utc(float(r["time"])), open=float(r["open"]),
                            high=float(r["high"]), low=float(r["low"]),
                            close=float(r["close"]), volume=float(r["tick_volume"])))
         return out
@@ -140,7 +187,8 @@ class MT5Connection:
         t = mt5.symbol_info_tick(symbol)
         if t is None:
             return None
-        return Quote(symbol=symbol, ts=float(t.time), bid=float(t.bid), ask=float(t.ask))
+        return Quote(symbol=symbol, ts=self.to_utc(float(t.time)),
+                     bid=float(t.bid), ask=float(t.ask))
 
 
 class MT5Feed:

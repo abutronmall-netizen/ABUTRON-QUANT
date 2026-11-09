@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS equity (
 );
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity(ts);
 
+CREATE TABLE IF NOT EXISTS runtime_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    ts    REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, message TEXT
 );
@@ -113,6 +119,23 @@ class Store:
                  t.exit_reason.value, t.conviction, t.regime, t.r_multiple, t.mfe, t.mae,
                  json.dumps(t.meta, default=str)))
             self.conn.commit()
+
+    def save_state(self, key: str, payload: dict, ts: Optional[float] = None) -> None:
+        """Durable runtime state: a restart must not refund the daily budget."""
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO runtime_state(key, value, ts) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
+                (key, json.dumps(payload, default=str), ts if ts is not None else time.time()))
+
+    def load_state(self, key: str) -> Optional[dict]:
+        row = self.conn.execute("SELECT value FROM runtime_state WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
 
     def record_equity(self, ts: float, broker: str, account: str, equity: float, balance: float) -> None:
         with self._lock:

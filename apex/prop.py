@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Optional
 
 from .models import Candidate, Decision, Position, TradeRecord
+from .risk import session_day
 
 
 class DrawdownType(str, Enum):
@@ -189,8 +190,7 @@ class PropGuard:
 
     # ------------------------------------------------------------------ #
     def _day_index(self, ts: float) -> int:
-        offset = self.p.daily_reset_hour_utc * 3600
-        return int((ts - offset) // 86400)
+        return session_day(ts, self.p.daily_reset_hour_utc)
 
     def _roll_day(self, ts: float) -> None:
         idx = self._day_index(ts)
@@ -253,6 +253,37 @@ class PropGuard:
                     st.passed = True
             elif not st.flat_required:
                 st.flat_required = "target_hit_min_days"
+
+    # ------------------------------------------------------------------ #
+    # state persistence
+    # ------------------------------------------------------------------ #
+    def export_state(self) -> dict:
+        st = self.st
+        return {"start_balance": st.start_balance, "phase": st.phase,
+                "day_index": st.day_index, "day_start_equity": st.day_start_equity,
+                "day_start_balance": st.day_start_balance,
+                "day_peak_profit": st.day_peak_profit,
+                "days_traded": sorted(st.days_traded),
+                "day_pnls": {str(k): v for k, v in st.day_pnls.items()},
+                "peak_equity": st.peak_equity, "equity": st.equity, "balance": st.balance,
+                "total_trades": st.total_trades, "breach": st.breach, "passed": st.passed,
+                "started_ts": st.started_ts, "last_ts": st.last_ts,
+                "flat_required": st.flat_required}
+
+    def import_state(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+        st = self.st
+        for key in ("start_balance", "phase", "day_index", "day_start_equity",
+                    "day_start_balance", "day_peak_profit", "peak_equity", "equity",
+                    "balance", "total_trades", "breach", "passed", "started_ts",
+                    "last_ts", "flat_required"):
+            if key in data:
+                setattr(st, key, data[key])
+        if "days_traded" in data:
+            st.days_traded = set(data["days_traded"] or [])
+        if "day_pnls" in data:
+            st.day_pnls = {int(k): v for k, v in (data["day_pnls"] or {}).items()}
 
     def _consistency_ok(self) -> bool:
         st, p = self.st, self.p

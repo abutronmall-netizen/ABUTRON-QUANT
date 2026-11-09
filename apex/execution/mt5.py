@@ -153,6 +153,14 @@ class MT5Broker:
             return Ack(ok=False, client_id=order.client_id, ts=ts,
                        reason=f"order_send None: {mt5.last_error()}",
                        broker="mt5", account=self.account_id, retryable=True)
+        placed = getattr(mt5, "TRADE_RETCODE_PLACED", 10008)
+        if result.retcode == placed:
+            # Accepted by the server but not dealt yet (e.g. RETURN filling):
+            # the engine must not invent a position for an unfilled order.
+            return Ack(ok=True, client_id=order.client_id, ts=ts, order_id=str(result.order),
+                       filled_price=price, lots=0.0, state="pending",
+                       requested_lots=order.lots, broker="mt5", account=self.account_id,
+                       raw={"retcode": result.retcode})
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             retryable = result.retcode in (mt5.TRADE_RETCODE_REQUOTE,
                                            mt5.TRADE_RETCODE_PRICE_CHANGED,
@@ -161,8 +169,11 @@ class MT5Broker:
                        reason=f"retcode {result.retcode}: {result.comment}",
                        broker="mt5", account=self.account_id, retryable=retryable,
                        raw={"retcode": result.retcode})
+        filled = float(getattr(result, "volume", order.lots) or order.lots)
+        partial = filled + 1e-9 < float(order.lots)
         return Ack(ok=True, client_id=order.client_id, ts=ts, order_id=str(result.order),
-                   filled_price=float(result.price), lots=float(result.volume),
+                   filled_price=float(result.price), lots=filled,
+                   state="partial" if partial else "filled", requested_lots=order.lots,
                    broker="mt5", account=self.account_id, raw={"deal": result.deal})
 
     # ------------------------------------------------------------------ #

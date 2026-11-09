@@ -11,6 +11,9 @@ venv/
 # runtime artifacts (journals, runs, cached market data)
 runs/
 data/*.csv
+data/ticks*
+*.ticks.csv
+.runtime
 *.db
 *.db-wal
 *.db-shm

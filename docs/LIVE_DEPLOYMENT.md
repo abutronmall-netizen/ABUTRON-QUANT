@@ -105,11 +105,58 @@ three trading days.
 
 ---
 
+## 3b. Restart and crash safety (verify before going live)
+
+A desk is judged by what happens at 03:00 when the process dies with a position open.
+
+1. **Open a demo position**, then `kill -9` the engine.
+2. Restart it. The log must show `boot: N adopted, 0 flattened` and the dashboard must list the
+   position with its stop. If it lists nothing, the position is unmanaged — stop and investigate.
+3. **Restart twice.** The second boot must adopt nothing new (`adopt` is idempotent).
+4. **Check the daily budget survived.** After a loss-halt day, restart: `risk.halt_kind` must still
+   be set and `day_trades` must not reset to 0.
+5. **Kill the network** (unplug / firewall the host). Within ~90 s the log must show
+   `feed socket died`, then `reconnect in 2s`, and after restoration `indicators resynced`.
+6. `--boot-policy flatten` is the alternative policy: on start it closes everything the broker
+   holds. Use it when you would rather be flat than adopted.
+
+```bash
+# verify all of the above without a broker
+python3 -m unittest tests.test_live -v
+```
+
+## 3c. Operator access
+
+* Bind to `127.0.0.1` (default) and put a reverse proxy with authentication in front.
+* Set `APEX_DASHBOARD_TOKEN` (or `--token`). Every POST (`kill`, `rearm`, `flatten`) then requires
+  `X-Apex-Token`; the dashboard asks for it once and keeps it in that browser only.
+* Cross-origin POSTs are rejected outright, so a malicious page cannot flatten your book.
+* The static file handler refuses any path that resolves outside `apex/api/static`.
+
+## 3d. Calendar, ticks and server time
+
+```bash
+# blackout windows from a JSON calendar (schema in apex/news.py, sample in config/)
+python3 -m apex news --file data/calendar.json --days 3
+python3 -m apex serve --mode mt5 --config config/mt5_fpmarkets.json --news data/calendar.json
+
+# record real ticks for cost research, then replay them
+python3 -m apex serve --mode deriv --record-ticks data/ticks.csv
+python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
+```
+
+MT5 timestamps arrive in **broker server time**. The adapter detects the offset from a live tick
+(snapped to 15 minutes, ignoring stale weekend ticks) and converts everything to UTC, so session
+windows and the prop day boundary are correct. Pin it if you prefer:
+`"mt5_server_offset_hours": 2` in config. Verify on the dashboard: a tick must never appear in the
+future, and the prop day must reset at your firm's hour, not eight hours early.
+
 ## 4. Operations
 
-### Start (systemd example)
+### Start (systemd unit is in the repo)
 
 ```ini
+# deploy/apex.service ships with the repo; this is the essential part
 [Unit]
 Description=ABUTRON QUANT
 After=network-online.target
@@ -126,8 +173,19 @@ User=abutron
 WantedBy=multi-user.target
 ```
 
-Bind the dashboard to localhost behind a reverse proxy with authentication. It can flatten the
-book; it is an operator console, not a public page.
+Bind the dashboard to localhost behind a reverse proxy with authentication, and set
+`APEX_DASHBOARD_TOKEN`. It can flatten the book; it is an operator console, not a public page.
+
+Container alternative:
+
+```bash
+docker build -t abutron-quant .
+docker run --rm -p 127.0.0.1:8000:8000 -v $PWD/runs:/app/runs \
+  -e APEX_DASHBOARD_TOKEN="$APEX_DASHBOARD_TOKEN" abutron-quant
+```
+
+The image runs as a non-root user, keeps `runs/` on a volume (so a restart keeps the journal and
+therefore the risk state) and defaults to paper mode.
 
 ### Monitoring (minimum viable)
 
@@ -143,19 +201,25 @@ book; it is an operator console, not a public page.
 | Repeated `EXEC_REJECT` | check `orders.reason`; spread/session/margin are the usual causes |
 | Risk engine `HALTED` | read `halt_kind`: `daily`/`streak` clear next day, `drawdown` needs a human |
 | Prop `AT_RISK` | stop trading; the guard already blocks at 80% of the daily budget |
-| Feed silent > 2 bars | restart; the engine will not trade stale data beyond its warmup checks |
+| Feed silent > 2 bars | you should see `feed socket died` + reconnect attempts in Events; if not, the supervisor is not running |
+| `boot: 1 adopted` after restart | expected when a position was open; confirm its stop matches the broker |
+| `broker rejected stop update` warning | Deriv multiplier contracts cannot be modified; the stop is enforced locally — keep the process supervised |
 
 ---
 
 ## 5. Known limits of the adapters
 
-* **Deriv**: SL/TP are attached at proposal time where the account type supports it; the adapter
-  does not implement contract modification, so exits are managed with an early sell. Contract P&L
-  must be reconciled from the portfolio endpoint.
+* **Deriv**: SL/TP are attached at proposal time where the account type supports it. Open
+  contracts cannot be modified, so a tightened stop is tracked **locally** and exits are executed
+  with an early sell; the engine warns when that happens, because a local stop is lost if the
+  process dies (boot adoption and reconciliation are the mitigation). Contract P&L must be
+  reconciled from the portfolio endpoint.
 * **MT5**: `order_send` filling mode differs by symbol; `IOC` is the default and is configurable
   (`filling_type`). Partial fills are acknowledged by volume but not split into multiple engine
   positions.
 * Neither adapter retries indefinitely: retryable retcodes are attempted twice, then surfaced.
+* Partial fills are honoured (`Ack.state == "partial"`, risk recalculated on the dealt volume) and
+  pending orders are never turned into positions (`TRADE_RETCODE_PLACED` → `state="pending"`).
 
 ## 6. Cost calibration
 

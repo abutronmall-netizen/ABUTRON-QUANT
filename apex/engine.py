@@ -25,7 +25,7 @@ from .models import (AccountState, Bar, Candidate, Decision, ExitReason, Order, 
 from .portfolio import PortfolioManager, ReflectionMemory
 from .prop import PropGuard, PropProfile
 from .regime import detect
-from .risk import RiskConfig, RiskEngine
+from .risk import RiskConfig, RiskEngine, session_day
 from .store import Store
 from .strategy import StrategyProfile, build_candidate, manage_position
 
@@ -41,6 +41,8 @@ class EngineConfig:
     record_all_signals: bool = True
     flatten_at_eod: bool = False
     reconcile_every: int = 200
+    eod_hour_utc: int = 21
+    adopt_on_boot: bool = True
     equity_every: int = 1
     correlation_groups: dict[str, str] = field(default_factory=lambda: {
         "R_10": "vol10", "1HZ10V": "vol10",
@@ -93,6 +95,9 @@ class TradingEngine:
         self.pm = PortfolioManager()
         self.risk = risk or RiskConfig()
         self.prop = prop
+        # one day boundary for risk and prop, taken from the challenge rules
+        if self.prop is not None:
+            self.risk.daily_reset_hour_utc = self.prop.p.daily_reset_hour_utc
         self.on_event = on_event
 
         initial = router.account(router.routes[0] if router.routes else None).equity \
@@ -119,6 +124,7 @@ class TradingEngine:
         self._bars_processed = 0
         self._started = now or time.time()
         self._flattened_today: Optional[int] = None
+        self._last_diffs: list[dict] = []
 
     # ------------------------------------------------------------------ #
     # events
@@ -194,10 +200,13 @@ class TradingEngine:
 
         self._evaluate_symbol(st, bar)
 
+        if self.cfg.reconcile_every and self._bars_processed % self.cfg.reconcile_every == 0:
+            self.reconcile()
+
     def _is_eod(self, ts: float) -> bool:
-        day = int(ts // 86400)
+        day = session_day(ts, self.risk.daily_reset_hour_utc)
         hour = int((ts % 86400) // 3600)
-        return hour >= 21 and self._flattened_today != day
+        return hour >= self.cfg.eod_hour_utc and self._flattened_today != day
 
     # ------------------------------------------------------------------ #
     def _evaluate_symbol(self, st: SymbolState, bar: Bar) -> None:
@@ -283,11 +292,22 @@ class TradingEngine:
                 self.store.record_signal(cand, "EXEC_REJECT", ack.reason, {"ack": ack.reason}, ts=ts)
             return
 
+        if getattr(ack, "state", "filled") == "pending" or (ack.lots or 0.0) <= 0.0:
+            self._event("order", f"pending {cand.side.value} {lots} {cand.symbol} "
+                                 f"(not filled yet, ref {ack.order_id})")
+            self._reject("PENDING_FILL", "order accepted but not filled", cand)
+            return
+
         self.orders_filled += 1
+        fill_lots = ack.lots or lots
         risk_money = decision.detail.get("risk_money") or abs(cand.price - cand.sl) * lots * spec.value_per_point_per_lot
+        if fill_lots + 1e-9 < lots:
+            # partial fill: the position carries less risk than the plan
+            risk_money = risk_money * fill_lots / lots
+            self._event("order", f"partial fill {fill_lots}/{lots} {cand.symbol}")
         pos = Position(
             id=ack.order_id or new_client_id("pos"), symbol=cand.symbol, side=cand.side,
-            lots=ack.lots or lots, entry=ack.filled_price or cand.price,
+            lots=fill_lots, entry=ack.filled_price or cand.price,
             sl=cand.sl, tp=cand.tp, opened_ts=ts, broker=route.broker, account=route.account,
             strategy=self.strategy.name, contract_id=ack.order_id or "",
             commission=ack.commission,
@@ -336,9 +356,26 @@ class TradingEngine:
                         reason = ExitReason.TRAILING
                 self.close_position(pos, reason, price, action.detail)
             elif action.new_sl is not None and action.new_sl != pos.sl:
-                ack = self.router.modify(pos, action.new_sl, pos.tp)
-                if ack.ok:
-                    pos.sl = action.new_sl
+                self._update_stop(pos, action.new_sl)
+
+    def _update_stop(self, pos: Position, new_sl: float) -> bool:
+        """Propagate a tightened stop to the broker, or enforce it locally.
+
+        Some venues (Deriv multiplier contracts) cannot modify an open contract.
+        The engine still has to honour the tightened stop, so it tracks it
+        locally - and says so, because a local-only stop dies with the process.
+        """
+        ack = self.router.modify(pos, new_sl, pos.tp)
+        if ack.ok:
+            pos.sl = new_sl
+            return True
+        pos.sl = new_sl
+        pos.meta["local_stop"] = True
+        if not pos.meta.get("local_stop_warned"):
+            pos.meta["local_stop_warned"] = True
+            self._event("warn", f"{pos.symbol}: broker rejected stop update "
+                                f"({ack.reason}); stop enforced locally only")
+        return False
 
     def close_position(self, pos: Position, reason: ExitReason, price: float,
                        detail: str = "") -> Optional[TradeRecord]:
@@ -409,7 +446,7 @@ class TradingEngine:
             price = (q.bid if pos.side is Side.BUY else q.ask) if q else pos.entry
             self.close_position(pos, ExitReason.EOD_FLAT if reason == "eod_flatten"
                                 else ExitReason.PROP_FLAT, price, reason)
-        self._flattened_today = int(ts // 86400)
+        self._flattened_today = session_day(ts, self.risk.daily_reset_hour_utc)
 
     def flatten_all(self, reason: str = "manual") -> None:
         for pos in list(self.positions.values()):
@@ -463,8 +500,119 @@ class TradingEngine:
         if self.router.killed and self.positions:
             self.flatten_all("kill_switch")
 
+    # ------------------------------------------------------------------ #
+    # boot reconciliation: what the broker holds is the truth
+    # ------------------------------------------------------------------ #
+    def adopt_positions(self, positions: list[Position], ts: Optional[float] = None) -> list[Position]:
+        """Take ownership of positions that exist at the broker but not here.
+
+        After a restart (or a crash) the engine's book is empty while the broker
+        still holds live risk. Ignoring that is how a desk ends up with an
+        unmanaged position and a duplicated entry on the same symbol.
+        """
+        adopted: list[Position] = []
+        ts = ts if ts is not None else time.time()
+        known = {(p.broker, p.symbol, p.contract_id or p.id) for p in self.positions.values()}
+        for p in positions:
+            key = (p.broker, p.symbol, p.contract_id or p.id)
+            if key in known or p.id in self.positions:
+                continue
+            spec = self.router.spec(p.symbol, p.broker)
+            dist = abs(p.entry - p.sl) if p.sl is not None else 0.0
+            p.meta.setdefault("risk_money",
+                              round(dist * p.lots * spec.value_per_point_per_lot, 2))
+            p.meta.setdefault("sl_initial", p.sl)
+            p.meta.setdefault("rr", 0.0)
+            p.meta["adopted"] = True
+            p.meta.setdefault("entry_bar_ts", p.opened_ts)
+            p.broker = p.broker or self.states[p.symbol].broker if p.symbol in self.states else p.broker
+            self.positions[p.id] = p
+            known.add(key)
+            adopted.append(p)
+            self._event("reconcile",
+                        f"adopted {p.side.value} {p.lots} {p.symbol} @ {p.entry:g} "
+                        f"sl={p.sl} ref={p.contract_id or p.id}")
+        return adopted
+
+    def boot_sync(self, policy: str = "adopt", ts: Optional[float] = None) -> dict:
+        """Reconcile on startup: adopt broker positions or flatten everything."""
+        try:
+            broker_positions = self.router.positions()
+        except Exception as exc:                      # a dead adapter must not block boot
+            self._event("error", f"boot reconcile failed: {exc}")
+            return {"adopted": [], "flattened": [], "diffs": [], "error": str(exc)}
+        adopted: list[Position] = []
+        flattened: list[str] = []
+        if policy == "flatten":
+            for p in broker_positions:
+                ack = self.router.close(p, "boot_flatten")
+                if ack.ok:
+                    flattened.append(p.symbol)
+        elif policy == "adopt" and self.cfg.adopt_on_boot:
+            adopted = self.adopt_positions(broker_positions, ts)
+        diffs = self.reconcile()
+        if adopted or flattened or diffs:
+            self._event("reconcile",
+                        f"boot: {len(adopted)} adopted, {len(flattened)} flattened, "
+                        f"{len(diffs)} diff(s)")
+        return {"adopted": [p.id for p in adopted], "flattened": flattened, "diffs": diffs}
+
+    # ------------------------------------------------------------------ #
+    # durable state
+    # ------------------------------------------------------------------ #
+    def export_state(self) -> dict:
+        return {"risk": self.risk_engine.export_state(),
+                "prop": self.prop.export_state() if self.prop is not None else None,
+                "positions": [{"id": p.id, "symbol": p.symbol, "side": p.side.value,
+                               "lots": p.lots, "entry": p.entry, "sl": p.sl, "tp": p.tp,
+                               "opened_ts": p.opened_ts, "broker": p.broker,
+                               "account": p.account, "strategy": p.strategy,
+                               "contract_id": p.contract_id, "meta": p.meta}
+                              for p in self.positions.values()]}
+
+    def import_state(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+        self.risk_engine.import_state(data.get("risk") or {})
+        if self.prop is not None and data.get("prop"):
+            self.prop.import_state(data["prop"])
+        for row in data.get("positions") or []:
+            try:
+                pos = Position(id=row["id"], symbol=row["symbol"], side=Side(row["side"]),
+                               lots=float(row["lots"]), entry=float(row["entry"]),
+                               sl=row.get("sl"), tp=row.get("tp"),
+                               opened_ts=float(row.get("opened_ts") or 0.0),
+                               broker=row.get("broker", ""), account=row.get("account", ""),
+                               strategy=row.get("strategy", self.strategy.name),
+                               contract_id=row.get("contract_id", ""),
+                               meta=row.get("meta") or {})
+            except Exception:
+                continue
+            self.positions[pos.id] = pos
+        self._event("info", f"state restored: {len(self.positions)} position(s), "
+                            f"halted={self.risk_engine.state.halted}")
+
+    def save_state(self, key: str = "engine") -> bool:
+        if self.store is None:
+            return False
+        try:
+            self.store.save_state(key, self.export_state())
+            return True
+        except Exception:
+            return False
+
+    def load_state(self, key: str = "engine") -> bool:
+        if self.store is None:
+            return False
+        data = self.store.load_state(key)
+        if not data:
+            return False
+        self.import_state(data)
+        return True
+
     def reconcile(self) -> list[dict]:
         diffs = self.router.reconcile(list(self.positions.values()))
+        self._last_diffs = diffs
         for d in diffs:
             self._event("reconcile", f"{d['type']} {d['symbol']} id={d['id']}")
         return diffs
@@ -515,6 +663,8 @@ class TradingEngine:
                 "atr": round(s.entry.atr_v, 5) if s.entry.atr_v else None,
                 "rsi": round(s.entry.rsi_v, 1) if s.entry.rsi_v is not None else None,
             } for s in self.states.values()],
+            "reconcile_diffs": len(self._last_diffs),
+            "local_stops": sum(1 for p in self.positions.values() if p.meta.get("local_stop")),
             "risk": self.risk_engine.snapshot(),
             "prop": self.prop.status(time.time()) if self.prop is not None else None,
             "router": self.router.snapshot(),

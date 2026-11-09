@@ -257,6 +257,8 @@ class Ack:
     retryable: bool = False
     broker: str = ""
     account: str = ""
+    state: str = "filled"        # filled | partial | pending | rejected
+    requested_lots: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
 

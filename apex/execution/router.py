@@ -48,7 +48,8 @@ class BrokerRouter:
         self.killed = False
         self._acks: dict[str, Ack] = {}
         self.stats = {"submitted": 0, "filled": 0, "rejected": 0, "retried": 0,
-                      "closed": 0, "modifications": 0, "duplicates": 0, "errors": 0}
+                      "closed": 0, "modifications": 0, "duplicates": 0, "errors": 0,
+                      "partial": 0, "pending": 0}
 
     # ------------------------------------------------------------------ #
     def route_for(self, symbol: str, broker: Optional[str] = None,
@@ -124,6 +125,10 @@ class BrokerRouter:
 
         if ack is not None and ack.ok:
             self.stats["filled"] += 1
+            if getattr(ack, "state", "filled") == "partial":
+                self.stats["partial"] += 1
+            elif getattr(ack, "state", "filled") == "pending":
+                self.stats["pending"] += 1
         else:
             self.stats["rejected"] += 1
         self._record(order, ack, route)

@@ -1,7 +1,14 @@
 {
   "_comment": "Paper trading with the synthetic feed. This is the default demo config: no credentials, no orders transmitted.",
   "mode": "paper",
-  "symbols_by_broker": { "deriv": ["R_25", "R_50", "R_75", "1HZ100V"] },
+  "symbols_by_broker": {
+    "deriv": [
+      "R_25",
+      "R_50",
+      "R_75",
+      "1HZ100V"
+    ]
+  },
   "tf": "M5",
   "strategy": "scalp_balanced",
   "prop_profile": "abutron_inhouse",
@@ -21,5 +28,13 @@
     "max_consecutive_losses": 3,
     "cooldown_after_loss_s": 180,
     "max_spread_atr": 0.35
+  },
+  "news_calendar": "",
+  "boot_policy": "adopt",
+  "persist_state": true,
+  "record_ticks": "",
+  "dashboard": {
+    "host": "127.0.0.1",
+    "port": 8000
   }
 }

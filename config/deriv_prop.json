@@ -1,7 +1,13 @@
 {
   "_comment": "Deriv synthetics through the WebSocket API, sized by the prop guard. Requires DERIV_TOKEN. Orders are simulated until live_orders is true AND --live is passed.",
   "mode": "deriv",
-  "symbols_by_broker": { "deriv": ["R_25", "R_50", "R_75"] },
+  "symbols_by_broker": {
+    "deriv": [
+      "R_25",
+      "R_50",
+      "R_75"
+    ]
+  },
   "tf": "M5",
   "strategy": "prop_conservative",
   "prop_profile": "ftmo_2step",
@@ -10,7 +16,10 @@
   "live_orders": false,
   "store_path": "runs/deriv/apex.db",
   "memory_path": "runs/deriv/reflection.json",
-  "deriv": { "app_id": "1089", "token_env": "DERIV_TOKEN" },
+  "deriv": {
+    "app_id": "1089",
+    "token_env": "DERIV_TOKEN"
+  },
   "risk": {
     "risk_per_trade_pct": 0.4,
     "max_daily_loss_pct": 4.0,
@@ -19,8 +28,16 @@
     "max_trades_per_day": 10,
     "max_consecutive_losses": 3,
     "cooldown_after_loss_s": 300,
-    "max_spread_atr": 0.30,
+    "max_spread_atr": 0.3,
     "session_start_utc": 6,
     "session_end_utc": 20
+  },
+  "news_calendar": "",
+  "boot_policy": "adopt",
+  "persist_state": true,
+  "record_ticks": "",
+  "dashboard": {
+    "host": "127.0.0.1",
+    "port": 8000
   }
 }

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 from .data.deriv import bars_from_csv
-from .data.feed import SyntheticConfig, SyntheticFeed, synth_series
+from .data.feed import SyntheticConfig, SyntheticFeed, TickReplayFeed, synth_series, ticks_from_csv
 from .engine import EngineConfig, TradingEngine
 from .execution.base import SymbolRegistry
 from .execution.router import BrokerRouter, Route
@@ -81,6 +81,8 @@ class BacktestRequest:
     spread_bps: Optional[float] = None
     data_dir: str = "data"            # cached candles written by `apex fetch`
     prefer_cached: bool = True
+    tick_path: str = ""               # recorded ticks (ts,symbol,bid,ask) to replay
+    news_calendar: str = ""           # JSON calendar for prop blackout windows
 
 
 @dataclass
@@ -164,7 +166,16 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
                                               plan["max_trades_per_day"])
             risk_cfg.max_daily_loss_pct = min(risk_cfg.max_daily_loss_pct,
                                               profile.max_daily_loss_pct * 0.9)
-        prop = PropGuard(profile, req.initial_balance, now=req.start_ts or time.time())
+        news_windows = None
+        if req.news_calendar:
+            from .news import NewsCalendar
+            try:
+                cal = NewsCalendar.load(req.news_calendar)
+                news_windows = cal.windows(0, 2 ** 40, minutes=profile.news_blackout_minutes)
+            except Exception:
+                news_windows = None
+        prop = PropGuard(profile, req.initial_balance, now=req.start_ts or time.time(),
+                         block_news_windows=news_windows)
 
     memory = ReflectionMemory(path=os.path.join(req.out_dir, "reflection.json") if req.record else None)
 
@@ -176,9 +187,12 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
         now=req.start_ts or time.time(),
     )
 
-    # merge timelines
-    merged = sorted(((b.ts, sym, b) for sym, bars in all_bars.items() for b in bars),
-                    key=lambda t: (t[0], t[1]))
+    if req.tick_path:
+        _run_tick_replay(req, engine, brokers)
+        merged = []
+    else:
+        merged = sorted(((b.ts, sym, b) for sym, bars in all_bars.items() for b in bars),
+                        key=lambda t: (t[0], t[1]))
     for ts, sym, bar in merged:
         sim = brokers[engine.states[sym].broker]
         spec = registry.spec(engine.states[sym].broker, sym)
@@ -252,6 +266,39 @@ def _write_artifacts(result: BacktestResult, req: BacktestRequest) -> None:
             w.writerow([row["ts"], row["equity"], row["balance"]])
     with open(os.path.join(req.out_dir, "report.md"), "w", encoding="utf-8") as fh:
         fh.write(render_markdown(result))
+
+
+def _run_tick_replay(req: BacktestRequest, engine, brokers: dict) -> None:
+    """Drive the engine with recorded bid/ask ticks instead of synthetic bars.
+
+    This is the only way to study spread and stop slippage honestly: positions
+    are managed at the quoted side, brackets trigger on the tick that crosses
+    them, and bars are only used for the decision timeframe.
+    """
+    try:
+        rows = ticks_from_csv(req.tick_path)
+    except OSError as exc:
+        raise ValueError(f"cannot read ticks at {req.tick_path}: {exc}") from exc
+    if not rows:
+        raise ValueError(f"no ticks found in {req.tick_path}")
+    feed = TickReplayFeed(rows, _tf_seconds(req.tf))
+    last_sym = None
+    for quote, bar in feed:
+        st = engine.states.get(quote.symbol)
+        if st is None:
+            continue
+        sim = brokers[st.broker]
+        sim.set_time(quote.ts)
+        sim.set_quote(quote)
+        engine.on_quote(quote)                 # position management at real spread
+        if bar is not None:
+            engine.set_quote(quote)
+            engine.on_bar(bar)
+            engine.on_bar_brackets(bar)
+        if last_sym != quote.symbol:
+            engine.cycle_guard()
+            last_sym = quote.symbol
+    engine.cycle_guard()
 
 
 def render_markdown(result: BacktestResult) -> str:

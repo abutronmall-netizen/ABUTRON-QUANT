@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "ts": "2026-11-10T13:00:00Z",
+      "currency": "USD",
+      "impact": "high",
+      "title": "CPI m/m"
+    },
+    {
+      "ts": "2026-11-10T19:00:00Z",
+      "currency": "USD",
+      "impact": "high",
+      "title": "FOMC decision"
+    },
+    {
+      "ts": "2026-11-11T07:00:00Z",
+      "currency": "EUR",
+      "impact": "high",
+      "title": "ECB press conference"
+    },
+    {
+      "ts": "2026-11-12T12:00:00Z",
+      "currency": "USD",
+      "impact": "high",
+      "title": "NFP"
+    }
+  ]
+}

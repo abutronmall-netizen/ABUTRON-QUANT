@@ -131,3 +131,40 @@ For each closed trade, every agent with |score| ≥ 0.05 that voted in the trade
 * **New instrument** — add a `SymbolSpec` to `SymbolRegistry` overrides (JSON) or `MT5_SYMBOLS`.
 * **New prop firm** — a `PropProfile` in JSON; no code required.
 * **New strategy family** — add a `StrategyProfile` preset; the orchestration stays identical.
+
+
+---
+
+## Operational layer (what makes it runnable, not just testable)
+
+```
+            ┌─────────────── process start ───────────────┐
+            │ store.load_state("engine")                  │  risk halt, day counters,
+            │   ↳ RiskEngine.import_state                 │  prop phase, open positions
+            │   ↳ PropGuard.import_state                  │
+            │ engine.boot_sync(policy)                    │  broker positions: adopt | flatten
+            └───────────────────┬─────────────────────────┘
+                                │
+   Deriv WS ──▶ FeedSupervisor ─┤  staleness 90 s → backoff → resubscribe → resync bars
+   MT5 ticks ──▶ offset→UTC ────┤  server time converted at the adapter boundary
+   Calendar ───▶ NewsCalendar ──┤  windows → PropGuard.news_windows (PROP_NEWS)
+                                ▼
+                        TradingEngine (unchanged single path)
+                                │
+                         every 30 s: router.reconcile(engine.positions)
+```
+
+Design rules enforced here:
+
+* **The broker is the truth.** On boot the engine adopts what the broker holds; the journal is a
+  cache of intent. A position can be in the journal and missing at the broker, but never the
+  reverse without an alert.
+* **State is durable or it does not exist.** Anything that changes a limit (halt, day counters,
+  prop phase) is written to `runtime_state` on save and restored before the first bar.
+* **A silent feed is a dead feed.** Liveness is message recency, not socket state.
+* **Auth is on the mutation surface only.** Reads stay open for the dashboard; POSTs need a token
+  and a same-origin request.
+
+Rules that are deliberately *not* here: distributed consensus, a message bus, multi-process
+sharding. One account, one challenge, one process — a second replica of a trading engine is a
+second set of orders.

@@ -1,4 +1,4 @@
-.PHONY: help demo test doctor backtest propsim sweep lint clean
+.PHONY: help demo test test-live doctor backtest propsim sweep news ticks docker lint clean
 
 help:
 	@echo "ABUTRON QUANT"
@@ -8,6 +8,10 @@ help:
 	@echo "  make backtest  # 4k-bar backtest with the prop guard"
 	@echo "  make propsim   # prop-challenge pass-rate simulation"
 	@echo "  make sweep     # walk-forward parameter sweep"
+	@echo "  make test-live # restart / socket / API safety tests"
+	@echo "  make news      # inspect the sample calendar windows"
+	@echo "  make ticks     # replay recorded ticks (needs data/ticks.csv)"
+	@echo "  make docker    # build the container image"
 	@echo "  make clean     # remove runtime artifacts"
 
 demo:
@@ -15,6 +19,18 @@ demo:
 
 test:
 	python3 -m unittest discover -s tests -v
+
+test-live:
+	python3 -m unittest tests.test_live tests.test_api tests.test_news tests.test_ticks tests.test_mt5_live -v
+
+news:
+	python3 -m apex news --file config/news_sample.json --days 5
+
+ticks:
+	python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv --prop ftmo_2step
+
+docker:
+	docker build -t abutron-quant .
 
 doctor:
 	python3 -m apex doctor

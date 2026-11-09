@@ -210,3 +210,97 @@ class LiveBarBuilder:
         b = self.current
         self.current = None
         return b
+
+
+# --------------------------------------------------------------------------- #
+# tick capture and replay
+# --------------------------------------------------------------------------- #
+class TickRecorder:
+    """Append live quotes to a CSV so research can replay real spreads.
+
+    Format: ``ts,symbol,bid,ask``. One file, all symbols; the replay feed groups
+    by symbol, so a single recording session is directly usable by the backtester.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self.written = 0
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        # Check the header by content, not by file size: a previous process may
+        # still be buffering, and appending a second header corrupts the feed.
+        has_header = False
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    has_header = fh.readline().strip().startswith("ts,")
+            except OSError:
+                has_header = False
+        self._new = not has_header
+        self._fh = open(path, "a", encoding="utf-8")
+        if self._new:
+            self._fh.write("ts,symbol,bid,ask\n")
+            self._fh.flush()
+
+    def write(self, quote: "Quote") -> None:
+        self._fh.write(f"{quote.ts:.3f},{quote.symbol},{quote.bid:.8f},{quote.ask:.8f}\n")
+        self.written += 1
+        if self.written % 500 == 0:
+            self._fh.flush()
+
+    def close(self) -> None:
+        try:
+            self._fh.flush()
+            self._fh.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "TickRecorder":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def ticks_from_csv(path: str, symbols: Optional[list[str]] = None) -> list[tuple[float, str, float, float]]:
+    """Read a recorded tick file into ``(ts, symbol, bid, ask)`` rows."""
+    import csv
+    rows: list[tuple[float, str, float, float]] = []
+    keep = set(symbols) if symbols else None
+    with open(path, "r", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            try:
+                sym = row["symbol"]
+                if keep is not None and sym not in keep:
+                    continue
+                rows.append((float(row["ts"]), sym, float(row["bid"]), float(row["ask"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return rows
+
+
+class TickReplayFeed:
+    """Replay recorded ticks through the same code path as a live feed."""
+
+    def __init__(self, rows: list[tuple[float, str, float, float]], tf_seconds: int = 300):
+        self.rows = rows
+        self.tf_seconds = tf_seconds
+        self._builders: dict[str, "LiveBarBuilder"] = {}
+
+    @property
+    def symbols(self) -> list[str]:
+        return sorted({r[1] for r in self.rows})
+
+    def builder(self, symbol: str) -> "LiveBarBuilder":
+        if symbol not in self._builders:
+            self._builders[symbol] = LiveBarBuilder(symbol, self.tf_seconds)
+        return self._builders[symbol]
+
+    def __iter__(self):
+        for ts, sym, bid, ask in self.rows:
+            q = Quote(sym, ts, bid, ask)
+            yield q, self.builder(sym).on_tick(ts, q.mid)
+
+    def __len__(self) -> int:
+        return len(self.rows)

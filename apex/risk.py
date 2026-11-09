@@ -13,8 +13,21 @@ from typing import Optional
 from .models import AccountState, Candidate, Decision, Position, SymbolSpec
 
 
+def session_day(ts: float, reset_hour_utc: int = 0) -> int:
+    """Firm trading-day index.
+
+    A prop firm's day does not start at UTC midnight; FTMO and most others reset
+    at 21:00/22:00 UTC (midnight server time). The risk governor and the prop
+    guard MUST agree on this boundary, otherwise the risk halt clears hours
+    before the prop day ends and the account gets a second full daily budget
+    inside the same firm day.
+    """
+    return int((ts - int(reset_hour_utc) * 3600) // 86400)
+
+
 def utc_day(ts: float) -> int:
-    return int(ts // 86400)
+    """Backwards-compatible alias for a UTC-midnight day index."""
+    return session_day(ts, 0)
 
 
 @dataclass
@@ -33,6 +46,7 @@ class RiskConfig:
     max_spread_atr: float = 0.40
     session_start_utc: int = 0              # hour
     session_end_utc: int = 24
+    daily_reset_hour_utc: int = 0           # firm day boundary (0 = UTC midnight)
     trade_on_weekends: bool = False
     kill_switch: bool = False
     max_correlated_positions: int = 2
@@ -59,7 +73,8 @@ class RiskEngine:
                  now: Optional[float] = None):
         self.cfg = cfg or RiskConfig()
         self.state = RiskState(
-            day=utc_day(now if now is not None else time.time()),
+            day=session_day(now if now is not None else time.time(),
+                            self.cfg.daily_reset_hour_utc),
             day_start_equity=initial_equity,
             peak_equity=initial_equity,
         )
@@ -67,7 +82,7 @@ class RiskEngine:
     # ------------------------------------------------------------------ #
     def on_equity(self, equity: float, ts: float) -> None:
         st = self.state
-        day = utc_day(ts)
+        day = session_day(ts, self.cfg.daily_reset_hour_utc)
         if day != st.day:
             st.day = day
             st.day_start_equity = equity
@@ -215,6 +230,28 @@ class RiskEngine:
         # register entry
         st.day_trades += 1
         return sized
+
+    # ------------------------------------------------------------------ #
+    # state persistence (a restart must not refund the daily budget)
+    # ------------------------------------------------------------------ #
+    def export_state(self) -> dict:
+        st = self.state
+        return {"day": st.day, "day_start_equity": st.day_start_equity,
+                "day_pnl": st.day_pnl, "day_trades": st.day_trades,
+                "peak_equity": st.peak_equity,
+                "consecutive_losses": st.consecutive_losses,
+                "cooldown_until": st.cooldown_until,
+                "halted": st.halted, "halt_reason": st.halt_reason,
+                "halt_kind": st.halt_kind}
+
+    def import_state(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+        for key in ("day", "day_start_equity", "day_pnl", "day_trades", "peak_equity",
+                    "consecutive_losses", "cooldown_until", "halted", "halt_reason",
+                    "halt_kind"):
+            if key in data:
+                setattr(self.state, key, data[key])
 
     def _reject(self, code: str, reason: str) -> Decision:
         self.state.rejections[code] = self.state.rejections.get(code, 0) + 1

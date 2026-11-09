@@ -51,8 +51,13 @@ python3 -m apex backtest --symbols R_25,R_50,R_75 --bars 4000 --prop ftmo_2step
 # 4. how often does a challenge survive? (many seeds, honest statistics)
 python3 -m apex propsim --profile ftmo_2step --seeds 12 --bars 4000
 
-# 5. tests
-python3 -m unittest discover -s tests      # 111 tests
+# 5. record real ticks, then replay them (the only honest cost study)
+python3 -m apex fetch --symbol R_75 --bars 5000
+python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
+python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
+
+# 6. tests
+python3 -m unittest discover -s tests      # 169 tests
 ```
 
 ---
@@ -64,7 +69,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **111 tests pass** in ~4 s |
+| Test suite | `python3 -m unittest discover -s tests` | **169 tests pass** in ~10 s |
 | Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
 | Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
 | Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
@@ -92,6 +97,14 @@ remains unreachable without a genuine edge — exactly the honest state of affai
 | Journal + full attribution | **Working** | `apex/store.py`; dashboard, reports |
 | Dashboard with rejection reasons and prop progress | **Working** | `apex/api/` |
 | Walk-forward sweep, prop pass-rate simulation | **Working** | `apex/research/optimize.py` |
+| Restart safety: broker book adopted/flattened on boot | **Working** | `engine.boot_sync`, `tests/test_live.py` |
+| Durable risk/prop state across restarts | **Working** | journal `runtime_state`, `engine.export_state` |
+| Supervised Deriv socket: staleness → reconnect → resync | **Working** | `FeedSupervisor` in `apex/live.py` |
+| MT5 broker-server-time → UTC conversion | **Working** | `MT5Connection.detect_offset`, `tests/test_mt5_live.py` |
+| Economic-calendar blackout windows | **Working** (you supply the file) | `apex/news.py`; `apex news --file ...` |
+| Tick capture + tick-level replay | **Working** | `--record-ticks`, `backtest --ticks` |
+| Partial fills and pending orders | **Working** | `Ack.state`, `tests/test_mt5_live.py` |
+| Operator-token auth + traversal-safe static serving | **Working** | `tests/test_api.py` |
 
 **Unverified means unverified.** No order has been transmitted to Deriv or FP Markets from this
 repository. Protocol and adapter logic are tested against fakes; a demo account must confirm
@@ -192,13 +205,14 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | Command | Purpose |
 | --- | --- |
 | `apex serve --demo` | paper engine + dashboard (default preview) |
-| `apex serve --mode deriv\|mt5` | live-data engine, dry-run unless `--live` |
+| `apex serve --mode deriv\|mt5` | live-data engine, dry-run unless `--live`; `--token`, `--news`, `--boot-policy` |
 | `apex backtest` | event-driven backtest on the production engine |
 | `apex sweep` | parameter sweep with walk-forward reporting |
 | `apex propsim` | challenge pass-rate simulation over many seeds |
 | `apex profiles` | list prop rule sets and their implied risk |
 | `apex doctor` | readiness matrix: credentials, adapters, journal, engine self-test |
-| `apex fetch` | download Deriv candles to `data/<SYM>_<TF>.csv`; backtests use them automatically |
+| `apex fetch` | download candles from Deriv **or** FP Markets MT5 to `data/<SYM>_<TF>.csv`; backtests use them automatically |
+| `apex news --file cal.json` | inspect an economic calendar and the blackout windows it implies |
 | `apex report --run runs/bt_x` | summarise a run |
 | `apex ai` | check the optional local LLM reviewer |
 
@@ -220,9 +234,10 @@ apex/
   strategy.py        entries, brackets, trailing, time stops
   risk.py            sizing and capital protection
   prop.py            prop-firm rule guard, pacing, phases
-  store.py           sqlite journal + attribution metrics
+  news.py            economic calendar → prop blackout windows
+  store.py           sqlite journal + attribution metrics + durable state
   backtest.py        event-driven runner (same engine)
-  live.py            feeds → engine runner
+  live.py            feeds → engine runner, boot sync, socket supervision
   data/              deriv (ws), mt5, synthetic/replay feed, ws client
   execution/         port interface, sim broker, deriv, mt5, router
   research/          sweep + prop pass-rate simulation
@@ -230,8 +245,30 @@ apex/
   api/               dashboard server + static UI
   cli.py             command line
 docs/                architecture, audit response, prop playbook, deployment, research
-tests/               111 unit + integration tests
+deploy/              systemd unit; Dockerfile at the repo root
+tests/               166 unit + integration tests
 ```
+
+---
+
+## Running it unattended
+
+Four things decide whether a desk can be left alone overnight. All four are implemented and tested.
+
+| Risk | Behaviour |
+| --- | --- |
+| Process restarts with live positions | `boot_sync` reads the broker book and **adopts** it (default; `--boot-policy flatten` to close instead), then reconciles every 30 s. Adopted positions keep their stops and are managed normally. |
+| Restart refunds the daily budget | Risk and prop state are journalled to `runtime_state` and restored on start: halt kind, day trades, day P&L, prop phase and day counters survive the crash. |
+| The socket dies silently | A Deriv feed with no message for 90 s is *dead*, not quiet: backoff 2→4→…→60 s, resubscribe, resync `warmup_bars` of candles, then carry on. Events are logged. |
+| Anyone can flatten the book | Control endpoints require `X-Apex-Token` when `--token`/`APEX_DASHBOARD_TOKEN` is set, cross-origin POSTs are refused, the server binds `127.0.0.1` by default, and static paths cannot escape the asset directory. |
+
+```bash
+python3 -m apex serve --mode deriv --config config/deriv_prop.json \
+  --token "$APEX_DASHBOARD_TOKEN" --news config/news_sample.json --record-ticks data/ticks.csv
+```
+
+Deployment artefacts: `Dockerfile` (dependency-free, non-root, healthcheck) and
+`deploy/apex.service` (systemd, `Restart=always`, state restored from the journal).
 
 ---
 

@@ -39,6 +39,10 @@ def _prop_arg(value):
     return value
 
 
+def _tf_seconds(tf: str) -> int:
+    return {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}.get(tf, 300)
+
+
 def _split(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
@@ -81,6 +85,11 @@ def cmd_serve(args) -> int:
         preload_bars=args.preload, bar_seconds_override=args.speed,
         trend_strength=args.trend_strength or cfg["trend_strength"],
         risk=risk_from(cfg),
+        boot_policy=(args.boot_policy if args.boot_policy != "adopt"
+                     else cfg.get("boot_policy", "adopt")),
+        persist_state=(not args.no_persist) and cfg.get("persist_state", True),
+        news_calendar=args.news or cfg.get("news_calendar", ""),
+        record_ticks=args.record_ticks or cfg.get("record_ticks", ""),
     )
     if mode != "paper" and not args.live:
         print("[!] live-orders OFF: the engine will simulate fills and will not transmit orders.")
@@ -88,7 +97,8 @@ def cmd_serve(args) -> int:
     runner.warmup()
     runner.start_background()
 
-    state = DashboardState(runner)
+    token = args.token if args.token is not None else os.environ.get("APEX_DASHBOARD_TOKEN", "")
+    state = DashboardState(runner, token=token)
     stop = threading.Event()
 
     def _term(signum, frame):
@@ -102,7 +112,8 @@ def cmd_serve(args) -> int:
     thread.start()
     print(f"[apex] mode={mode} symbols={live.symbols_by_broker} strategy={live.strategy} "
           f"prop={live.prop_profile or 'none'}")
-    print(f"[apex] dashboard on http://{args.host}:{args.port}")
+    print(f"[apex] dashboard on http://{args.host}:{args.port}"
+          + ("  (control endpoints require the operator token)" if token else ""))
     try:
         while not stop.is_set():
             time.sleep(0.5)
@@ -128,6 +139,8 @@ def cmd_backtest(args) -> int:
         trend_strength=args.trend_strength,
         record=not args.no_record,
         prefer_cached=not args.synthetic_only,
+        tick_path=args.ticks or "",
+        news_calendar=args.news or "",
     )
     print(f"[backtest] {req.symbols_by_broker} bars={req.bars} strategy={req.strategy} "
           f"prop={req.prop_profile or 'none'} seed={req.seed}")
@@ -257,6 +270,32 @@ def cmd_doctor(args) -> int:
     # prop profiles
     rows.append(("prop profiles", "OK", ", ".join(PROFILES)))
 
+    # restart safety surface
+    try:
+        st = Store("runs/_doctor.db")
+        st.save_state("doctor", {"ok": True})
+        ok = st.load_state("doctor") == {"ok": True}
+        st.close()
+        rows.append(("state store", "OK" if ok else "FAIL",
+                     "risk/prop state survives restart" if ok else "round-trip failed"))
+    except Exception as exc:
+        rows.append(("state store", "FAIL", f"{type(exc).__name__}: {exc}"))
+    cal = cfg.get("news_calendar", "")
+    if cal:
+        try:
+            from .news import NewsCalendar
+            n = len(NewsCalendar.load(cal))
+            rows.append(("news calendar", "OK", f"{n} events in {cal}"))
+        except Exception as exc:
+            rows.append(("news calendar", "FAIL", f"{cal}: {exc}"))
+    else:
+        rows.append(("news calendar", "N/A", "no --news file: PROP_NEWS stays inert"))
+    token = os.environ.get("APEX_DASHBOARD_TOKEN", "")
+    rows.append(("dashboard token", "OK" if token else "MISSING",
+                 "operator token set" if token else "set APEX_DASHBOARD_TOKEN before exposing the UI"))
+    rows.append(("boot policy", "OK", cfg.get("boot_policy", "adopt")
+                 + (" · state persisted" if cfg.get("persist_state", True) else " · NOT persisted")))
+
     width = max(len(r[0]) for r in rows)
     print(f"\nABUTRON QUANT doctor  (v{__version__})\n")
     for name, status, detail in rows:
@@ -269,20 +308,43 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_fetch(args) -> int:
+    """Download candles to data/<SYMBOL>_<TF>.csv (Deriv or FP Markets MT5)."""
     from .data.deriv import bars_to_csv, fetch_candles_sync
     cfg = load_config(args.config)
     creds = broker_credentials(cfg)
-    granularity = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600}.get(args.tf, 300)
-    print(f"[fetch] {args.symbol} {args.tf} {args.bars} candles from Deriv…")
-    bars = fetch_candles_sync(args.symbol, granularity, args.bars,
-                              app_id=creds["deriv_app_id"], token=creds["deriv_token"])
-    if not bars:
-        print("  no data returned — check the symbol and network access")
-        return 1
     out = args.out or f"data/{args.symbol}_{args.tf}.csv"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    if args.broker == "mt5":
+        from .data.mt5 import MT5Config, MT5Connection
+        conn = MT5Connection(MT5Config(login=creds["mt5_login"], password=creds["mt5_password"],
+                                       server=creds["mt5_server"], path=creds["mt5_path"]))
+        try:
+            conn.connect()
+        except Exception as exc:
+            print(f"[fetch] MT5 unavailable: {exc}")
+            return 2
+        bars = conn.rates(args.symbol, args.tf, args.bars)
+        print(f"[fetch] mt5 offset {conn.offset_hours}h (server -> UTC)")
+    else:
+        bars = fetch_candles_sync(args.symbol, _tf_seconds(args.tf), args.bars,
+                                  app_id=creds["deriv_app_id"], token=creds["deriv_token"])
     bars_to_csv(bars, out)
-    print(f"  {len(bars)} bars -> {out}")
+    span = (bars[-1].ts - bars[0].ts) / 86400 if bars else 0
+    print(f"[fetch] {len(bars)} bars {args.symbol} {args.tf} ({span:.1f} days) -> {out}")
+    return 0
+
+
+def cmd_news(args) -> int:
+    from .news import NewsCalendar
+    cal = NewsCalendar.load(args.file)
+    now = time.time()
+    up = [e for e in cal.events if now - args.minutes * 60 <= e.ts <= now + args.days * 86400]
+    print(f"{len(cal)} events in {args.file}; {len(up)} in the next {args.days} day(s)\n")
+    for e in up:
+        print(f"  {time.strftime('%Y-%m-%d %H:%M', time.gmtime(e.ts))}Z  "
+              f"{e.currency:>4} {e.impact:<6} {e.title}")
+    wins = cal.windows(now, now + args.days * 86400, minutes=args.minutes)
+    print(f"\n{len(wins)} blackout window(s) of +/-{args.minutes} min (high impact only)")
     return 0
 
 
@@ -346,7 +408,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--demo", action="store_true", help="paper mode with synthetic feed")
     sp.add_argument("--mode", default=None, choices=["paper", "deriv", "mt5"])
     sp.add_argument("--port", type=int, default=8000)
-    sp.add_argument("--host", default="0.0.0.0")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="bind address; use 0.0.0.0 only behind a proxy with auth")
     sp.add_argument("--seed", type=int, default=11)
     sp.add_argument("--speed", type=float, default=3.0,
                     help="wall-clock seconds per bar in paper mode (demo pacing)")
@@ -354,6 +417,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="paper mode: replay N bars at start so the desk opens with history")
     sp.add_argument("--db", default=None)
     sp.add_argument("--live", action="store_true", help="TRANSMIT real orders (requires credentials)")
+    sp.add_argument("--token", default=None,
+                    help="operator token for control endpoints (default: $APEX_DASHBOARD_TOKEN)")
+    sp.add_argument("--news", default=None, help="JSON economic calendar for prop blackout windows")
+    sp.add_argument("--boot-policy", default="adopt", choices=["adopt", "flatten", "ignore"],
+                    help="what to do with positions the broker already holds at startup")
+    sp.add_argument("--record-ticks", default=None,
+                    help="append live quotes to a CSV for tick-level replay")
+    sp.add_argument("--no-persist", action="store_true",
+                    help="do not restore risk/prop state from the journal on restart")
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("backtest", help="event-driven backtest with the production engine")
@@ -364,6 +436,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--synthetic-only", action="store_true",
                     help="ignore cached candles in data/ and use the synthetic tape")
     sp.add_argument("--no-record", action="store_true")
+    sp.add_argument("--ticks", default=None,
+                    help="replay recorded ticks (ts,symbol,bid,ask) instead of synthetic bars")
+    sp.add_argument("--news", default=None, help="JSON economic calendar for prop blackout windows")
     sp.set_defaults(func=cmd_backtest)
 
     sp = sub.add_parser("sweep", help="walk-forward parameter sweep")
@@ -388,13 +463,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--config", default=None)
     sp.set_defaults(func=cmd_doctor)
 
-    sp = sub.add_parser("fetch", help="download candles from Deriv")
+    sp = sub.add_parser("fetch", help="download candles (Deriv or FP Markets MT5)")
     sp.add_argument("--config", default=None)
+    sp.add_argument("--broker", default="deriv", choices=["deriv", "mt5"])
     sp.add_argument("--symbol", default="R_75")
     sp.add_argument("--tf", default="M5")
     sp.add_argument("--bars", type=int, default=3000)
     sp.add_argument("--out", default=None)
     sp.set_defaults(func=cmd_fetch)
+
+    sp = sub.add_parser("news", help="inspect an economic calendar and its blackout windows")
+    sp.add_argument("--file", required=True, help="JSON calendar path")
+    sp.add_argument("--days", type=int, default=3)
+    sp.add_argument("--minutes", type=int, default=2)
+    sp.set_defaults(func=cmd_news)
 
     sp = sub.add_parser("report", help="summarise a backtest run")
     sp.add_argument("--run", default="runs/latest")

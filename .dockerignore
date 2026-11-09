@@ -1,0 +1,9 @@
+.git
+runs
+data
+__pycache__
+*.pyc
+*.db
+.env
+.venv
+tests

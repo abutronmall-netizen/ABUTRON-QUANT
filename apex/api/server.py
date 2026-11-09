@@ -12,6 +12,7 @@ engine is doing or why". This dashboard answers, live:
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import threading
@@ -26,9 +27,11 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 class DashboardState:
     """Holds the live runner and exposes a thread-safe snapshot."""
 
-    def __init__(self, runner=None, snapshot_fn: Optional[Callable[[], dict]] = None):
+    def __init__(self, runner=None, snapshot_fn: Optional[Callable[[], dict]] = None,
+                 token: str = ""):
         self.runner = runner
         self._snapshot_fn = snapshot_fn
+        self.token = token or ""
         self._lock = threading.RLock()
         self._cache: dict = {}
         self._cache_ts = 0.0
@@ -57,6 +60,10 @@ class DashboardState:
             return {"ok": False, "reason": "no engine"}
         acks = self.runner.router.kill(flatten=flatten)
         self.runner.store.record_event("control", f"kill switch engaged (flatten={flatten})")
+        try:
+            self.runner.engine.save_state("engine")
+        except Exception:
+            pass
         return {"ok": True, "closed": len(acks)}
 
     def rearm(self) -> dict:
@@ -111,7 +118,7 @@ def make_handler(state: DashboardState):
                 return self._json([t.as_dict() for t in tr][-200:])
             if path == "/api/health":
                 return self._json({"ok": True, "uptime_s": round(time.time() - START, 1),
-                                   "version": "2.0.0"})
+                                   "version": "2.1.0"})
             if path == "/api/stream":
                 return self._stream()
             if path.startswith("/static/"):
@@ -120,8 +127,31 @@ def make_handler(state: DashboardState):
                 return self._send(204, b"")
             return self._send(404, b'{"error":"not found"}')
 
+        def _authorized(self) -> bool:
+            """Operator endpoints mutate real positions: they need a token.
+
+            With no token configured the endpoints are open, which is only
+            acceptable because the dashboard binds to localhost by default.
+            """
+            if not state.token:
+                return True
+            supplied = (self.headers.get("X-Apex-Token")
+                        or (self.headers.get("Authorization") or "").replace("Bearer ", ""))
+            return hmac.compare_digest(str(supplied or ""), str(state.token))
+
+        def _origin_ok(self) -> bool:
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            host = self.headers.get("Host", "")
+            return host and host in origin
+
         def do_POST(self) -> None:             # noqa: N802
             path = urlparse(self.path).path
+            if not self._origin_ok():
+                return self._json({"ok": False, "error": "cross-origin control rejected"}, 403)
+            if not self._authorized():
+                return self._json({"ok": False, "error": "token required"}, 401)
             length = int(self.headers.get("Content-Length") or 0)
             if length:
                 try:
@@ -138,9 +168,13 @@ def make_handler(state: DashboardState):
 
         # -------------------------------------------------------------- #
         def _file(self, name: str, ctype: Optional[str] = None) -> None:
-            name = name.replace("..", "")
-            full = os.path.join(STATIC_DIR, name)
-            if not os.path.isfile(full):
+            # Resolve, then prove the result is still inside the static root.
+            # A naive `..` strip is not enough: "//etc/passwd" survives it and
+            # os.path.join happily escapes the directory with an absolute path.
+            name = name.lstrip("/\\").replace("\x00", "")
+            root = os.path.abspath(STATIC_DIR)
+            full = os.path.abspath(os.path.normpath(os.path.join(root, name)))
+            if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
                 return self._send(404, b"not found", "text/plain")
             ctype = ctype or {
                 ".html": "text/html; charset=utf-8", ".js": "application/javascript",
@@ -172,7 +206,7 @@ def make_handler(state: DashboardState):
 START = time.time()
 
 
-def serve(state: DashboardState, host: str = "0.0.0.0", port: int = 8000) -> ThreadingHTTPServer:
+def serve(state: DashboardState, host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
     httpd.daemon_threads = True
     print(f"[dashboard] http://{host}:{port}")

@@ -53,6 +53,23 @@
     pill.className = "pill " + (s.live_orders ? "live" : "paper");
     $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false });
 
+    // Safety chip: what an operator needs to know before leaving the desk alone.
+    const safe = s.safety || {};
+    const bits = [];
+    if (safe.boot_policy) bits.push(`boot:${safe.boot_policy}`);
+    if (safe.persist_state === false) bits.push("no-persist");
+    if (s.reconcile_diffs) bits.push(`${s.reconcile_diffs} diff`);
+    if (safe.ticks_recorded) bits.push(`ticks:${safe.ticks_recorded}`);
+    const spy = $("safetyPill");
+    if (spy) {
+      const news = s.news;
+      spy.textContent = bits.length ? bits.join(" · ") : "safety ok";
+      spy.className = "pill " + (news && news.blackout ? "warn" : "");
+      spy.title = news && news.next
+        ? `next high-impact event in ${Math.round((news.next.ts * 1000 - Date.now()) / 60000)} min (${news.next.currency})`
+        : "no calendar loaded";
+    }
+
     const acct = (s.accounts && s.accounts[0]) || {};
     const equity = s.total_equity || acct.equity || 0;
     const risk = s.risk || {};
@@ -353,8 +370,27 @@
   }
 
   /* ------------------------------------------------------------------ */
+  function apexToken() { try { return localStorage.getItem("apexToken") || ""; } catch (e) { return ""; } }
+
   async function control(path) {
-    try { await fetch(path, { method: "POST" }); } catch (e) { showError("control failed"); }
+    // The operator token never lives in the page: it is asked for once and kept
+    // in this browser only. A 401 means "you are not authorised to flatten".
+    let token = apexToken();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: token ? { "X-Apex-Token": token } : {},
+        });
+        if (res.status === 401) {
+          token = prompt("Operator token required") || "";
+          try { localStorage.setItem("apexToken", token); } catch (e) {}
+          continue;
+        }
+        if (!res.ok) { showError("control rejected (" + res.status + ")"); return; }
+        break;
+      } catch (e) { showError("control failed"); return; }
+    }
     setTimeout(poll, 400);
   }
   $("btnKill").addEventListener("click", () => {

@@ -1,0 +1,27 @@
+# systemd unit for a single trading desk (Deriv or FP Markets).
+#   sudo cp deploy/apex.service /etc/systemd/system/apex.service
+#   sudo systemctl enable --now apex
+# Logs: journalctl -u apex -f
+[Unit]
+Description=ABUTRON QUANT trading desk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=apex
+WorkingDirectory=/opt/abutron-quant
+EnvironmentFile=/opt/abutron-quant/.env
+# Live Deriv: add --live once the demo checklist in docs/LIVE_DEPLOYMENT.md is done.
+ExecStart=/usr/bin/python3 -m apex serve --mode deriv --config config/deriv_prop.json \
+          --host 127.0.0.1 --port 8000 --news /opt/abutron-quant/data/calendar.json
+Restart=always
+RestartSec=10
+# A restart must never refund the daily budget: state is restored from the journal.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
