@@ -19,7 +19,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: No third-party runtime dependencies
         run: |
-          test ! -s requirements.txt || (echo "requirements.txt must stay empty" && exit 1)
+          # requirements.txt is a comment-only placeholder; "-s" treated that
+          # as non-empty and failed on every push. Judge the requirement lines.
+          test -f requirements.txt || exit 0
+          if grep -vE '^[[:space:]]*(#|$)' requirements.txt | grep -q .; then
+            echo "runtime must stay stdlib-only, but requirements.txt lists:"
+            grep -vE '^[[:space:]]*(#|$)' requirements.txt
+            exit 1
+          fi
       - name: Lint (undefined names, bugbear, import order)
         run: pip install ruff && ruff check apex tests
       - name: Tests

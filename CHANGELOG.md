@@ -3,6 +3,29 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.5.1 — the CI guard that was failing itself
+
+GitHub Actions has been red on every push since v2.2 and I only read the
+`package` job, which passes. The failing step was the dependency guard:
+
+```sh
+test ! -s requirements.txt
+```
+
+`requirements.txt` is a deliberate comment-only placeholder explaining that the
+stack is stdlib-only. `-s` asks "is the file longer than zero bytes?", so a
+321-byte file of comments counted as a third-party dependency and the job died
+before lint, tests, doctor, backtest, backup, slippage or verify ever ran — on
+all three Pythons, on every branch, for nine pushes.
+
+The guard now judges what the file *says*, not how large it is: comments and
+blank lines are allowed, any real requirement line fails the job and is printed.
+Verified three ways locally: comment-only passes, missing file passes, a
+`requests>=2` line fails and echoes the line.
+
+Nothing else changes. The engine, journal, portals and the 2.5.0 study are
+untouched; 309 tests still pass and lint is still clean.
+
 ## 2.5.0 — measure what the venue charges, and make the evidence recoverable
 
 Two of the four items `docs/RESEARCH.md` §7 listed as "deliberately not
