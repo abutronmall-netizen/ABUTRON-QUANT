@@ -1,0 +1,61 @@
+name: deploy-self-hosted
+
+# Installs the apex engine by running the installer ON the server through a
+# self-hosted GitHub runner registered against this repo.
+#
+# Use this when the server canNOT accept inbound SSH (NAT, firewall, no public
+# port). The runner polls GitHub outbound-only; no inbound ports are opened.
+#
+# HARD REQUIREMENTS before this is safe:
+#   1. The repo MUST be private. GitHub warns against self-hosted runners on
+#      public repos: anyone who can trigger a workflow (e.g. via a PR) would
+#      execute code on your server.
+#   2. The runner service account needs root or passwordless sudo
+#      (the installer uses apt-get, writes /etc/systemd/system, /opt/...).
+#   3. Register with a dedicated label, e.g. `abutron`, and keep this file's
+#      runs-on as [self-hosted, abutron].
+#
+# Setup guide: docs/DEPLOY_GITHUB_RUNNER.md (section "Option B").
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to install"
+        default: "main"
+        required: true
+        type: string
+      install_dir:
+        description: "Install directory on the server"
+        default: "/opt/abutron-quant"
+        required: true
+        type: string
+      start_service:
+        description: "Restart apex.service after install (unit runs with --live). Default OFF."
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apex-deploy
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Install on this server
+    runs-on: [self-hosted, abutron]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run installer locally
+        env:
+          IN_REF: ${{ inputs.ref }}
+          IN_DIR: ${{ inputs.install_dir }}
+          IN_START: ${{ inputs.start_service }}
+        run: |
+          START_FLAG=""
+          if [ "$IN_START" = "true" ]; then START_FLAG="--start-service"; fi
+          bash scripts/install_remote.sh --ref "$IN_REF" --dir "$IN_DIR" $START_FLAG
