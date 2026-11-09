@@ -94,6 +94,11 @@ class TestSlippageStudy(unittest.TestCase):
         rep = study(SlippageConfig(db_path="/tmp/does-not-exist-anywhere.db"))
         self.assertEqual(rep["fills"], 0)
         self.assertIn("no journal", rep["detail"])
+        # a missing journal still answers with the full shape
+        self.assertEqual(rep["verdict"], "no data")
+        self.assertEqual(rep["overall"]["n"], 0)
+        self.assertEqual((rep["by_symbol"], rep["by_broker"], rep["by_side"]), ({}, {}, {}))
+        self.assertEqual(rep["recent"], [])
 
     def test_the_study_never_writes_to_the_journal(self):
         path = make_journal([{"client_id": "a", "symbol": "R_25",

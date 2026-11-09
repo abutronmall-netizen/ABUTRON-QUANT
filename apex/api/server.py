@@ -213,7 +213,8 @@ class DashboardState:
                                           modelled_bps=MODELLED_ENTRY_BPS))
         except Exception as exc:                 # never take the dashboard down
             report = {"verdict": "error", "fills": 0, "detail": f"{type(exc).__name__}: {exc}",
-                      "overall": {}, "by_symbol": {}, "by_broker": {}, "by_side": {}}
+                      "overall": {}, "by_symbol": {}, "by_broker": {}, "by_side": {},
+                      "recent": []}
         with self._lock:
             self._slippage_cache, self._slippage_ts = report, time.time()
         return report

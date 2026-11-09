@@ -164,6 +164,13 @@ def study(cfg: Optional[SlippageConfig] = None) -> dict:
         "fills": 0,
         "verdict": "no data",
         "detail": "",
+        # the full shape is always present, so a client never has to branch on
+        # whether a journal existed when it reads overall/by_symbol/recent
+        "overall": _summary([]),
+        "by_symbol": {},
+        "by_broker": {},
+        "by_side": {},
+        "recent": [],
     }
     if not os.path.exists(cfg.db_path):
         out["detail"] = f"no journal at {cfg.db_path}"

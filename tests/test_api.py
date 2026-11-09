@@ -179,8 +179,13 @@ class TestDashboardAPI(unittest.TestCase):
         code, body, _ = self._req("/api/slippage")
         self.assertEqual(code, 200)
         report = json.loads(body)
-        for key in ("fills", "verdict", "overall", "by_symbol", "modelled_bps"):
+        # the same shape whether or not a journal happens to exist
+        for key in ("fills", "verdict", "overall", "by_symbol", "by_broker",
+                    "by_side", "recent", "modelled_bps"):
             self.assertIn(key, report)
+        self.assertEqual(report["overall"].get("n", 0), report["fills"])
+        self.assertIn(report["verdict"], ("no data", "no fills", "insufficient sample",
+                                          "inside model", "under-modelled", "error"))
 
     def test_verify_endpoint_degrades_without_a_journal(self):
         code, body, _ = self._req("/api/verify")

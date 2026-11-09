@@ -3,6 +3,29 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.5.2 — a test that only passed where the work had been done
+
+With the dependency guard fixed, CI reached the test step for the first time
+since v2.2 and failed in all three Pythons while the same 309 tests were green
+on my machine. The cause was mine, from 2.5.0:
+`test_slippage_endpoint_always_answers` asserted that `/api/slippage` always
+carries an `overall` key, which held only because `runs/live/apex.db` existed on
+my machine from the dashboard I had been testing against. On a clean checkout
+there is no journal, the endpoint correctly answers `{"verdict": "no data"}`,
+and the key was missing.
+
+The endpoint's shape is now the guarantee rather than an accident of state:
+`study()` always returns `overall`, `by_symbol`, `by_broker`, `by_side` and
+`recent`, including on the no-journal, unreadable-journal and error paths, and
+the API test asserts the shape plus `overall.n == fills` and a known verdict
+instead of a hard-coded key list.
+
+Reproduced and confirmed the way CI sees it — a fresh `git clone` of the branch
+with no `runs/`, no `data/` and no `backups/` — then ran every CI step in that
+clone: doctor, the reference backtest, backup, restore, slippage, verify, prune
+and propsim all exit 0. The next push is the first real test of those steps in
+nine releases; if one of them breaks, this changelog was wrong.
+
 ## 2.5.1 — the CI guard that was failing itself
 
 GitHub Actions has been red on every push since v2.2 and I only read the
