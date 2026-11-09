@@ -26,14 +26,19 @@ class ReviewerConfig:
     mode: str = "advisory"          # advisory | veto
 
 
-PROMPT = """You are a risk reviewer for a short-term scalping desk.
+# Kept as plain concatenation: the schema below contains literal JSON braces,
+# and str.format treats those as fields (that bug made every review raise).
+PROMPT_HEADER = """You are a risk reviewer for a short-term scalping desk.
 Given one trade proposal, reply with STRICT JSON only:
 {"approve": true|false, "confidence": 0..1, "risk_note": "<= 20 words"}
 Reject only for clear structural problems: entering into a range extreme,
 counter-trend in a strong trend, or incoherent context.
 Trade proposal:
-{payload}
 """
+
+
+def build_prompt(payload: dict[str, Any]) -> str:
+    return PROMPT_HEADER + json.dumps(payload, default=str)
 
 
 class OllamaReviewer:
@@ -54,7 +59,7 @@ class OllamaReviewer:
     def review(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps({
             "model": self.cfg.model,
-            "prompt": PROMPT.format(payload=json.dumps(payload, default=str)),
+            "prompt": build_prompt(payload),
             "stream": False,
             "format": "json",
             "options": {"temperature": 0.0, "num_predict": 80},

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: No third-party runtime dependencies
+        run: |
+          test ! -s requirements.txt || (echo "requirements.txt must stay empty" && exit 1)
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: Doctor (self-test must be green)
+        run: python -m apex doctor
+      - name: Reference backtest produces artifacts
+        run: |
+          python -m apex backtest --symbols R_25,R_50 --bars 1500 --no-record --out /tmp/bt
+          test -s /tmp/bt/summary.json
+          test -s /tmp/bt/report.md
+      - name: Prop guard does not breach on a random tape
+        run: python -m apex propsim --profile abutron_inhouse --seeds 3 --bars 1500 --out /tmp/ps
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build && python -m build
+      - run: python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
+      - run: /tmp/venv/bin/apex --version

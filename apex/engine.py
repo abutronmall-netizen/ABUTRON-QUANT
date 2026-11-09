@@ -43,6 +43,8 @@ class EngineConfig:
     reconcile_every: int = 200
     eod_hour_utc: int = 21
     adopt_on_boot: bool = True
+    ai_review: bool = False          # optional local LLM review of sized entries
+    ai_mode: str = "advisory"        # advisory (log only) | veto (may block)
     equity_every: int = 1
     correlation_groups: dict[str, str] = field(default_factory=lambda: {
         "R_10": "vol10", "1HZ10V": "vol10",
@@ -86,7 +88,8 @@ class TradingEngine:
                  store: Optional[Store] = None,
                  memory: Optional[ReflectionMemory] = None,
                  now: Optional[float] = None,
-                 on_event: Optional[Callable[[str, str], None]] = None):
+                 on_event: Optional[Callable[[str, str], None]] = None,
+                 reviewer=None):
         self.router = router
         self.cfg = cfg or EngineConfig()
         self.strategy = strategy or StrategyProfile()
@@ -95,6 +98,7 @@ class TradingEngine:
         self.pm = PortfolioManager()
         self.risk = risk or RiskConfig()
         self.prop = prop
+        self.reviewer = reviewer
         # one day boundary for risk and prop, taken from the challenge rules
         if self.prop is not None:
             self.risk.daily_reset_hour_utc = self.prop.p.daily_reset_hour_utc
@@ -278,6 +282,14 @@ class TradingEngine:
             self._reject("ZERO_LOTS", "prop/risk produced zero size", cand)
             return
 
+        if self.reviewer is not None and self.cfg.ai_review:
+            allowed, note = self._ai_review(cand, lots, decision)
+            if not allowed:
+                if self.store is not None and self.cfg.record_all_signals:
+                    self.store.record_signal(cand, "AI_VETO", "reviewer veto", note, ts=ts)
+                self._reject("AI_VETO", str(note.get("risk_note", "")), cand)
+                return
+
         order = Order(
             symbol=cand.symbol, side=cand.side, lots=lots, broker=route.broker,
             account=route.account, strategy=self.strategy.name, sl=cand.sl, tp=cand.tp,
@@ -357,6 +369,38 @@ class TradingEngine:
                 self.close_position(pos, reason, price, action.detail)
             elif action.new_sl is not None and action.new_sl != pos.sl:
                 self._update_stop(pos, action.new_sl)
+
+    def _ai_review(self, cand: Candidate, lots: float, decision: Decision) -> tuple[bool, dict]:
+        """Optional model review of an already-sized trade.
+
+        It sees only what the engine has already decided, so it can reduce risk
+        but never create it. Any failure fails open: a dead model must not be
+        able to stop a desk.
+        """
+        payload = {
+            "symbol": cand.symbol, "side": cand.side.value, "lots": lots,
+            "price": cand.price, "sl": cand.sl, "tp": cand.tp, "rr": round(cand.rr, 2),
+            "conviction": round(cand.conviction, 3), "regime": cand.regime,
+            "risk_money": decision.detail.get("risk_money"),
+            "votes": [{"agent": v.agent, "score": round(v.score, 2)} for v in cand.votes],
+        }
+        try:
+            allowed, note = self.reviewer.gate(payload)
+        except Exception as exc:                      # never block on the reviewer
+            return True, {"risk_note": f"reviewer error ({type(exc).__name__})"}
+        if not allowed and self.cfg.ai_mode != "veto":
+            # Defensive: advisory means advisory even if the reviewer object
+            # disagrees. A component that can only shrink risk must not be able
+            # to block risk by mistake.
+            self._event("ai", f"advisory objection {cand.symbol} "
+                              f"({note.get('risk_note', '')}) - entry allowed")
+            return True, note
+        if not allowed:
+            self._event("risk", f"reviewer veto {cand.symbol} "
+                                f"({note.get('risk_note', '')})")
+        elif note.get("risk_note"):
+            self._event("ai", f"{cand.symbol} review: {note['risk_note']}")
+        return bool(allowed), note or {}
 
     def _update_stop(self, pos: Position, new_sl: float) -> bool:
         """Propagate a tightened stop to the broker, or enforce it locally.

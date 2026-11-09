@@ -57,7 +57,7 @@ python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
 # 6. tests
-python3 -m unittest discover -s tests      # 169 tests
+python3 -m unittest discover -s tests      # 209 tests
 ```
 
 ---
@@ -69,7 +69,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **169 tests pass** in ~10 s |
+| Test suite | `python3 -m unittest discover -s tests` | **209 tests pass** in ~13 s |
 | Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
 | Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
 | Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
@@ -214,7 +214,7 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex fetch` | download candles from Deriv **or** FP Markets MT5 to `data/<SYM>_<TF>.csv`; backtests use them automatically |
 | `apex news --file cal.json` | inspect an economic calendar and the blackout windows it implies |
 | `apex report --run runs/bt_x` | summarise a run |
-| `apex ai` | check the optional local LLM reviewer |
+| `apex ai --test` | check the optional local LLM reviewer (wired into entries, advisory by default) |
 
 `--prop none` disables the guard; `--prop config/my_firm.json` loads your own terms.
 
@@ -241,10 +241,11 @@ apex/
   data/              deriv (ws), mt5, synthetic/replay feed, ws client
   execution/         port interface, sim broker, deriv, mt5, router
   research/          sweep + prop pass-rate simulation
-  ai/reviewer.py     optional Ollama reviewer (advisory or veto)
+  ai/reviewer.py     optional Ollama reviewer (advisory or veto, always fail-open)
   api/               dashboard server + static UI
   cli.py             command line
 docs/                architecture, audit response, prop playbook, deployment, research
+.github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
 tests/               166 unit + integration tests
 ```
@@ -269,6 +270,16 @@ python3 -m apex serve --mode deriv --config config/deriv_prop.json \
 
 Deployment artefacts: `Dockerfile` (dependency-free, non-root, healthcheck) and
 `deploy/apex.service` (systemd, `Restart=always`, state restored from the journal).
+
+---
+
+## Optional AI review
+
+`apex serve --ai advisory` (or `veto`) sends each **already-sized** entry to a local model
+through Ollama. It sees the candidate, the sizing and the votes — never a blank slate — so it can
+only reduce risk, not create ideas. Failures fail open, and in `advisory` mode the engine will not
+let a reviewer block a trade even if it says so. Off by default: `apex ai --test` checks whether a
+model is reachable.
 
 ---
 

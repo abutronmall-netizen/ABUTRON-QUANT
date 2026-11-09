@@ -68,6 +68,10 @@ class LiveConfig:
     mt5_server_offset_hours: Optional[float] = None   # None -> auto-detect
     reconcile_every_s: float = 30.0
     record_ticks: str = ""              # write ticks to this CSV for replay research
+    ai_review: bool = False             # optional local LLM review (advisory by default)
+    ai_mode: str = "advisory"           # advisory | veto
+    ai_url: str = "http://127.0.0.1:11434"
+    ai_model: str = "qwen2.5:1.5b"
 
 
 class LiveRunner:
@@ -101,13 +105,19 @@ class LiveRunner:
 
         self._build_brokers()
         self.router = BrokerRouter(self.routes, registry=self.registry, store=self.store)
+        reviewer = None
+        if cfg.ai_review:
+            from .ai.reviewer import OllamaReviewer, ReviewerConfig
+            reviewer = OllamaReviewer(ReviewerConfig(url=cfg.ai_url, model=cfg.ai_model,
+                                                     mode=cfg.ai_mode))
         self.engine = TradingEngine(
             router=self.router, symbols_by_broker=cfg.symbols_by_broker,
             cfg=EngineConfig(entry_tf=cfg.tf, warmup_bars=cfg.warmup_bars,
                              # live reconcile is time-based, not bar-based
-                             reconcile_every=0, adopt_on_boot=True),
+                             reconcile_every=0, adopt_on_boot=True,
+                             ai_review=cfg.ai_review, ai_mode=cfg.ai_mode),
             strategy=self.strategy, risk=self.risk_cfg, prop=self.prop,
-            store=self.store, memory=self.memory, now=time.time(),
+            store=self.store, memory=self.memory, now=time.time(), reviewer=reviewer,
         )
         self._last_reconcile = 0.0
         self.news = None

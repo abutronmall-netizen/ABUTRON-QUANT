@@ -90,6 +90,10 @@ def cmd_serve(args) -> int:
         persist_state=(not args.no_persist) and cfg.get("persist_state", True),
         news_calendar=args.news or cfg.get("news_calendar", ""),
         record_ticks=args.record_ticks or cfg.get("record_ticks", ""),
+        ai_review=bool(args.ai and args.ai != "off") or bool(cfg.get("ai", {}).get("enabled")),
+        ai_mode=(args.ai if args.ai in ("advisory", "veto") else cfg.get("ai", {}).get("mode", "advisory")),
+        ai_url=cfg.get("ai", {}).get("url", "http://127.0.0.1:11434"),
+        ai_model=cfg.get("ai", {}).get("model", "qwen2.5:1.5b"),
     )
     if mode != "paper" and not args.live:
         print("[!] live-orders OFF: the engine will simulate fills and will not transmit orders.")
@@ -426,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="append live quotes to a CSV for tick-level replay")
     sp.add_argument("--no-persist", action="store_true",
                     help="do not restore risk/prop state from the journal on restart")
+    sp.add_argument("--ai", default=None, choices=["off", "advisory", "veto"],
+                    help="optional local LLM review of sized entries (default: config)")
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("backtest", help="event-driven backtest with the production engine")

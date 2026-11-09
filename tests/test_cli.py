@@ -71,6 +71,20 @@ class TestCommands(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(tmp, "report.md")))
         self.assertTrue(os.path.exists(os.path.join(tmp, "summary.json")))
 
+    def test_report_summarises_a_written_run(self):
+        tmp = tempfile.mkdtemp()
+        code, _ = run(["backtest", "--symbols", "R_25", "--bars", "500", "--out", tmp])
+        self.assertEqual(code, 0)
+        code, out = run(["report", "--run", tmp])
+        self.assertEqual(code, 0)
+        self.assertIn("trades", out)
+        self.assertIn("maxDD", out)
+        self.assertEqual(run(["report", "--run", os.path.join(tmp, "nope")])[0], 1)
+
+    def test_serve_accepts_the_ai_flag(self):
+        args = build_parser().parse_args(["serve", "--demo", "--ai", "veto"])
+        self.assertEqual(args.ai, "veto")
+
     def test_fetch_without_mt5_exits_with_a_clear_code(self):
         code, out = run(["fetch", "--broker", "mt5", "--symbol", "EURUSD", "--bars", "10"])
         self.assertEqual(code, 2)
