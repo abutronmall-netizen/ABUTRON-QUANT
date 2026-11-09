@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ABUTRON QUANT — scalping desk</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark">AQ</div>
+    <div>
+      <h1>ABUTRON QUANT</h1>
+      <p class="sub">single decision engine · deriv + fp markets mt5 · prop guard</p>
+    </div>
+  </div>
+  <div class="topmeta">
+    <span id="modePill" class="pill">connecting</span>
+    <span id="clock" class="mono muted">--:--:--</span>
+    <button id="btnFlatten" class="btn ghost" title="Close all positions">Flatten</button>
+    <button id="btnKill" class="btn danger" title="Block all new orders">Kill</button>
+    <button id="btnRearm" class="btn ghost" title="Release kill switch">Re-arm</button>
+  </div>
+</header>
+
+<section class="kpis">
+  <div class="kpi"><span class="k">Equity</span><b id="kEquity" class="mono">—</b><em id="kEquitySub" class="muted mono"></em></div>
+  <div class="kpi"><span class="k">Day P&amp;L</span><b id="kDayPnl" class="mono">—</b><em id="kDaySub" class="muted mono"></em></div>
+  <div class="kpi"><span class="k">Open risk</span><b id="kOpenRisk" class="mono">—</b><em class="muted mono">at stop</em></div>
+  <div class="kpi"><span class="k">Trades</span><b id="kTrades" class="mono">—</b><em id="kTradesSub" class="muted mono"></em></div>
+  <div class="kpi"><span class="k">Win rate · Avg R</span><b id="kWin" class="mono">—</b><em id="kWinSub" class="muted mono"></em></div>
+  <div class="kpi"><span class="k">Prop status</span><b id="kProp" class="mono">—</b><em id="kPropSub" class="muted mono"></em></div>
+</section>
+
+<main class="grid">
+  <section class="panel span2">
+    <div class="panel-head"><h2>Decision engine</h2><span class="hint" id="engineHint"></span></div>
+    <div class="table-wrap">
+      <table class="tbl" id="signalsTbl">
+        <thead><tr>
+          <th>Instrument</th><th>Price</th><th>Regime</th><th>Trend M5/M15/H1</th>
+          <th>Conviction</th><th>Agent votes</th><th>Decision</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="propPanel">
+    <div class="panel-head"><h2>Prop challenge</h2><span id="propVerdict" class="pill">—</span></div>
+    <div id="propBody" class="prop-body"><p class="muted">no challenge attached</p></div>
+  </section>
+
+  <section class="panel span2">
+    <div class="panel-head"><h2>Open positions</h2><span class="hint" id="posHint"></span></div>
+    <div class="table-wrap">
+      <table class="tbl" id="positionsTbl">
+        <thead><tr><th>Instrument</th><th>Side</th><th>Lots</th><th>Entry</th><th>Stop</th>
+        <th>Target</th><th>P&amp;L</th><th>Broker</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Why trades were not taken</h2><span class="hint">coded rejections</span></div>
+    <div id="rejections" class="bars"></div>
+    <div class="panel-head sub-head"><h2>Risk governor</h2></div>
+    <div id="riskBody" class="risk-body"></div>
+  </section>
+
+  <section class="panel span2">
+    <div class="panel-head"><h2>Equity</h2><span class="hint" id="eqHint"></span></div>
+    <canvas id="equity" height="150"></canvas>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Router</h2><span class="hint">broker connectivity</span></div>
+    <div id="routerBody" class="risk-body"></div>
+  </section>
+
+  <section class="panel span2">
+    <div class="panel-head"><h2>Closed trades</h2><span class="hint" id="tradeHint"></span></div>
+    <div class="table-wrap scroll">
+      <table class="tbl" id="tradesTbl">
+        <thead><tr><th>Time</th><th>Instrument</th><th>Side</th><th>Lots</th><th>Entry</th>
+        <th>Exit</th><th>P&amp;L</th><th>R</th><th>Exit reason</th><th>Regime</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Agent weights</h2><span class="hint">reflection memory</span></div>
+    <div id="weights" class="weights"></div>
+    <div class="panel-head sub-head"><h2>Event log</h2></div>
+    <div id="events" class="events"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span id="footNote">Paper/simulation mode. Synthetic results are not a claim of profitability and do not imply a prop-firm pass.</span>
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

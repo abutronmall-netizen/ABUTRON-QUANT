@@ -1,0 +1,27 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# runtime artifacts (journals, runs, cached market data)
+runs/
+data/*.csv
+*.db
+*.db-wal
+*.db-shm
+reflection.json
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/

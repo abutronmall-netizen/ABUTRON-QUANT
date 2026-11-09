@@ -1,0 +1,31 @@
+{
+  "_comment": "FP Markets MT5. Requires a Windows host with the MetaTrader5 package and a logged-in terminal. Dry-run until live_orders + --live.",
+  "mode": "mt5",
+  "symbols_by_broker": { "mt5": ["EURUSD", "GBPUSD", "XAUUSD", "US30"] },
+  "tf": "M5",
+  "strategy": "scalp_balanced",
+  "prop_profile": "fundednext_starter",
+  "initial_balance": 50000,
+  "warmup_bars": 200,
+  "live_orders": false,
+  "store_path": "runs/mt5/apex.db",
+  "memory_path": "runs/mt5/reflection.json",
+  "mt5": {
+    "login_env": "MT5_LOGIN",
+    "password_env": "MT5_PASSWORD",
+    "server_env": "MT5_SERVER",
+    "path_env": "MT5_PATH"
+  },
+  "risk": {
+    "risk_per_trade_pct": 0.35,
+    "max_daily_loss_pct": 3.5,
+    "max_total_drawdown_pct": 8.0,
+    "max_open_positions": 4,
+    "max_trades_per_day": 14,
+    "max_consecutive_losses": 3,
+    "cooldown_after_loss_s": 240,
+    "max_spread_atr": 0.30,
+    "session_start_utc": 7,
+    "session_end_utc": 19
+  }
+}
