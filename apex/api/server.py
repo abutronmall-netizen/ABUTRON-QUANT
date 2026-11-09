@@ -21,7 +21,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
+from .. import __version__
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+#: clean URLs for the portals; every page is plain HTML over the same API
+PAGES = {
+    "": "index.html", "overview": "index.html", "index.html": "index.html",
+    "positions": "positions.html", "signals": "signals.html",
+    "risk": "risk.html", "journal": "journal.html", "system": "system.html",
+    "research": "research.html",
+    "positions.html": "positions.html", "signals.html": "signals.html",
+    "risk.html": "risk.html", "journal.html": "journal.html",
+    "system.html": "system.html", "research.html": "research.html",
+}
 
 
 class DashboardState:
@@ -35,6 +48,8 @@ class DashboardState:
         self._lock = threading.RLock()
         self._cache: dict = {}
         self._cache_ts = 0.0
+        self._verify_cache: dict = {}
+        self._verify_ts = 0.0
 
     def snapshot(self, max_age: float = 1.0) -> dict:
         with self._lock:
@@ -53,6 +68,143 @@ class DashboardState:
             snap["server_ts"] = now
             self._cache, self._cache_ts = snap, now
             return snap
+
+    # ---- research artefacts ------------------------------------------ #
+    def _runs_root(self) -> str:
+        db = getattr(getattr(self.runner, "store", None), "path", "") or ""
+        if db:
+            here = os.path.dirname(os.path.abspath(db))
+            return os.path.dirname(here) if os.path.basename(here) in ("live", "paper") else here
+        return os.path.abspath("runs")
+
+    def research(self) -> dict:
+        """Backtest, sweep and prop-sim artefacts found under ``runs/``.
+
+        Read-only and deliberately small: the dashboard lists what the research
+        commands already wrote, it never runs one. Synthetic numbers are shown
+        with the caveat attached, because a pretty equity canvas is exactly how
+        a control-tape result gets mistaken for an edge.
+        """
+        root = self._runs_root()
+        out: dict = {"root": root, "runs": [], "sweeps": [], "propsims": [],
+                     "caveat": ("Synthetic control tape: these runs exercise the engine "
+                                "end to end. They are not evidence of an edge and must "
+                                "not be presented as expected live performance.")}
+        if not os.path.isdir(root):
+            return out
+        caps = 8 * 1024 * 1024
+
+        def _load(path):
+            try:
+                if os.path.getsize(path) > caps:
+                    return None
+                with open(path, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except (OSError, ValueError):
+                return None
+
+        def _mtime(path):
+            try:
+                return os.path.getmtime(path)
+            except OSError:
+                return 0.0
+
+        def _folders():
+            """`runs/<name>` and `runs/<group>/<name>` — both are used in practice."""
+            for name in sorted(os.listdir(root))[:400]:
+                folder = os.path.join(root, name)
+                if not os.path.isdir(folder):
+                    continue
+                yield name, folder
+                try:
+                    children = sorted(os.listdir(folder))[:100]
+                except OSError:
+                    continue
+                for child in children:
+                    nested = os.path.join(folder, child)
+                    if os.path.isdir(nested):
+                        yield f"{name}/{child}", nested
+
+        for name, folder in _folders():
+            summary = os.path.join(folder, "summary.json")
+            if os.path.exists(summary):
+                data = _load(summary) or {}
+                m = dict(data.get("metrics") or {})
+                m.pop("equity_curve", None)
+                req = ((data.get("config") or {}).get("request") or {})
+                out["runs"].append({
+                    "name": name, "mtime": _mtime(summary),
+                    "request": {k: req.get(k) for k in
+                                ("symbols_by_broker", "bars", "tf", "seed", "strategy",
+                                 "prop_profile", "trend_strength")},
+                    "metrics": {k: m.get(k) for k in
+                                ("trades", "wins", "win_rate", "pnl", "expectancy",
+                                 "profit_factor", "avg_r", "max_drawdown_pct",
+                                 "sharpe", "sortino")},
+                    "by_symbol": m.get("by_symbol") or {},
+                    "rejections": data.get("rejections") or {},
+                    "prop": data.get("prop"),
+                    "symbols": data.get("config", {}).get("symbols") or {},
+                })
+            sweep_path = os.path.join(folder, "sweep.json")
+            if os.path.exists(sweep_path):
+                data = _load(sweep_path) or {}
+                out["sweeps"].append({
+                    "name": name, "mtime": _mtime(sweep_path),
+                    "combinations": data.get("combinations"),
+                    "request": data.get("request") or {},
+                    "results": (data.get("results") or [])[:10],
+                })
+            try:
+                entries = sorted(os.listdir(folder))
+            except OSError:
+                continue
+            for entry in entries:
+                if not entry.startswith("propsim_") or not entry.endswith(".json"):
+                    continue
+                data = _load(os.path.join(folder, entry)) or {}
+                out["propsims"].append({
+                    "name": name, "file": entry, "mtime": _mtime(os.path.join(folder, entry)),
+                    "profile": data.get("profile"), "runs": data.get("runs"),
+                    "pass_rate_pct": data.get("pass_rate_pct"),
+                    "breach_rate_pct": data.get("breach_rate_pct"),
+                    "median_profit_pct": data.get("median_profit_pct"),
+                    "median_dd_pct": data.get("median_dd_pct"),
+                    "verdicts": data.get("verdicts") or {},
+                    "caveat": data.get("caveat"),
+                    "outcomes": (data.get("outcomes") or [])[:12],
+                })
+        for key in ("runs", "sweeps", "propsims"):
+            out[key].sort(key=lambda r: -float(r.get("mtime") or 0))
+        return out
+
+    def verify(self, max_age: float = 30.0) -> dict:
+        """Read-only: run `apex verify` against the runner's own journal."""
+        with self._lock:
+            now = time.time()
+            if self._verify_cache and now - self._verify_ts < max_age:
+                return self._verify_cache
+        db = getattr(getattr(self.runner, "store", None), "path", "")
+        cfg = getattr(self.runner, "cfg", None)
+        try:
+            from ..verify import VerifyConfig, verify_run
+            if not db or not os.path.exists(db):
+                report = {"ok": False, "db": db, "checks": [], "counts": {},
+                          "failures": ["journal"], "warnings": [],
+                          "detail": "no journal attached"}
+            else:
+                report = verify_run(VerifyConfig(
+                    db_path=db,
+                    heartbeat_path=(getattr(cfg, "heartbeat_path", "") or None),
+                    live=bool(getattr(cfg, "live_orders", False)),
+                ))
+        except Exception as exc:                 # never take the dashboard down
+            report = {"ok": False, "db": db, "checks": [], "counts": {},
+                      "failures": [], "warnings": [],
+                      "error": f"{type(exc).__name__}: {exc}"}
+        with self._lock:
+            self._verify_cache, self._verify_ts = report, time.time()
+        return report
 
     # ---- controls ---------------------------------------------------- #
     def kill(self, flatten: bool = True) -> dict:
@@ -109,8 +261,9 @@ def make_handler(state: DashboardState):
 
         def do_GET(self) -> None:              # noqa: N802
             path = urlparse(self.path).path
-            if path in ("/", "/index.html"):
-                return self._file("index.html", "text/html; charset=utf-8")
+            page = path.strip("/").lower()
+            if page in PAGES:
+                return self._file(PAGES[page], "text/html; charset=utf-8")
             if path == "/api/state":
                 return self._json(state.snapshot())
             if path == "/api/trades":
@@ -118,7 +271,11 @@ def make_handler(state: DashboardState):
                 return self._json([t.as_dict() for t in tr][-200:])
             if path == "/api/health":
                 return self._json({"ok": True, "uptime_s": round(time.time() - START, 1),
-                                   "version": "2.3.1"})
+                                   "version": __version__})
+            if path == "/api/verify":
+                return self._json(state.verify())
+            if path == "/api/research":
+                return self._json(state.research())
             if path == "/api/stream":
                 return self._stream()
             if path.startswith("/static/"):
@@ -179,6 +336,8 @@ def make_handler(state: DashboardState):
             ctype = ctype or {
                 ".html": "text/html; charset=utf-8", ".js": "application/javascript",
                 ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json",
+                ".woff2": "font/woff2", ".map": "application/json",
+                ".png": "image/png", ".ico": "image/x-icon",
             }.get(os.path.splitext(full)[1], "application/octet-stream")
             with open(full, "rb") as fh:
                 body = fh.read()

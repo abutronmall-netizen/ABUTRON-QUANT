@@ -27,8 +27,14 @@ from .models import Bar, Quote, Side
 from .portfolio import ReflectionMemory
 from .prop import PropGuard, PropProfile, get_profile, plan_for
 from .risk import RiskConfig
+from .symbols import DEFAULT_SYMBOLS_BY_BROKER
 from .store import Store, compute_metrics
 from .strategy import StrategyProfile
+
+#: The synthetic tape must not move when the clock does: a published reference
+#: run is only useful if `--seed 7` reproduces it tomorrow. 2023-11-14 22:13 UTC,
+#: aligned to any timeframe we trade.
+ANCHOR_TS = 1_700_000_000.0
 
 #: plausible anchors so synthetic series start in the right price neighbourhood
 BASE_PRICES = {
@@ -59,7 +65,8 @@ VOL_BPS = {
 
 @dataclass
 class BacktestRequest:
-    symbols_by_broker: dict[str, list[str]]
+    symbols_by_broker: dict[str, list[str]] = field(
+        default_factory=lambda: dict(DEFAULT_SYMBOLS_BY_BROKER))
     bars: int = 4000
     tf: str = "M5"
     seed: int = 7
@@ -76,6 +83,9 @@ class BacktestRequest:
     out_dir: str = "runs/latest"
     use_prop_plan: bool = True
     start_ts: Optional[float] = None
+    #: when `start_ts` is unset the synthetic tape starts here instead of "now",
+    #: so a seeded run is reproducible across days, machines and CI
+    anchor_ts: float = ANCHOR_TS
     max_bars_hold: int = 12
     # synthetic-market structure knobs (validation only; real data comes from feeds)
     trend_strength: float = 0.35
@@ -106,6 +116,13 @@ class BacktestResult:
                 f"maxDD {m['max_drawdown_pct']:>5.2f}%")
 
 
+def _tape_start(req: BacktestRequest) -> float:
+    """First bar of the synthetic tape: explicit, else the fixed anchor."""
+    step = tf_seconds(req.tf)
+    base = float(req.start_ts if req.start_ts is not None else req.anchor_ts)
+    return (int(base) // step) * step - req.bars * step
+
+
 def _series_for(symbol: str, req: BacktestRequest) -> list[Bar]:
     """Real cached candles when available, otherwise the synthetic control tape."""
     if req.prefer_cached and req.data_dir:
@@ -121,13 +138,30 @@ def _series_for(symbol: str, req: BacktestRequest) -> list[Bar]:
                               seed=req.seed * 7919 + zlib.crc32(symbol.encode()) % 100000,
                               jump_probability=0.01, jump_bps=250.0,
                               trend_strength=req.trend_strength)
-        start = req.start_ts or (int(time.time()) // tf_seconds(req.tf)) * tf_seconds(req.tf) - req.bars * tf_seconds(req.tf)
-        return SyntheticFeed(symbol, cfg, start_ts=start).bars(req.bars)
-    start = req.start_ts or (int(time.time()) // tf_seconds(req.tf)) * tf_seconds(req.tf) - req.bars * tf_seconds(req.tf)
+        return SyntheticFeed(symbol, cfg, start_ts=_tape_start(req)).bars(req.bars)
+    start = _tape_start(req)
     cfg = SyntheticConfig(base_price=base, tf_seconds=tf_seconds(req.tf), vol_bps=vol,
                           seed=req.seed * 7919 + zlib.crc32(symbol.encode()) % 100000,
                           trend_strength=req.trend_strength)
     return SyntheticFeed(symbol, cfg, start_ts=start).bars(req.bars)
+
+
+def _clock_start(req: BacktestRequest) -> float:
+    """The engine clock starts where the data starts.
+
+    Tick replay uses whatever the file contains; a synthetic run uses the fixed
+    anchor. Never `time.time()` — a risk engine judging a 2023 tape against
+    today's session clock rejects everything, and a backtest that silently
+    trades nothing looks like a strategy with no setups.
+    """
+    if req.tick_path and req.start_ts is None:
+        try:
+            rows = ticks_from_csv(req.tick_path)
+            if rows:
+                return float(rows[0][0])
+        except OSError:
+            pass
+    return _tape_start(req)
 
 
 def run_backtest(req: BacktestRequest) -> BacktestResult:
@@ -172,7 +206,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
                 news_windows = cal.windows(0, 2 ** 40, minutes=profile.news_blackout_minutes)
             except Exception:
                 news_windows = None
-        prop = PropGuard(profile, req.initial_balance, now=req.start_ts or time.time(),
+        prop = PropGuard(profile, req.initial_balance, now=_clock_start(req),
                          block_news_windows=news_windows)
 
     memory = ReflectionMemory(path=os.path.join(req.out_dir, "reflection.json") if req.record else None)
@@ -182,7 +216,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
         cfg=EngineConfig(entry_tf=req.tf, warmup_bars=req.warmup_bars,
                          max_bars_hold=req.max_bars_hold),
         strategy=strategy, risk=risk_cfg, prop=prop, store=store, memory=memory,
-        now=req.start_ts or time.time(),
+        now=_clock_start(req),
     )
 
     if req.tick_path:

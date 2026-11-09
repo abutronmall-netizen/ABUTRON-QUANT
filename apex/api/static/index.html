@@ -1,108 +1,66 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ABUTRON QUANT — scalping desk</title>
-<link rel="stylesheet" href="/static/style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="Live decision engine, equity, prop progress and open risk.">
+<title>ABUTRON QUANT — overview</title>
+<!-- Bootstrap 5.3.3 is vendored in the repo: the desk must render with no internet. -->
+<link rel="stylesheet" href="/static/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
-<header class="topbar">
-  <div class="brand">
-    <div class="mark">AQ</div>
-    <div>
-      <h1>ABUTRON QUANT</h1>
-      <p class="sub">single decision engine · deriv + fp markets mt5 · prop guard</p>
+<body data-page="overview">
+<nav class="navbar navbar-expand-lg aq-nav sticky-top" data-bs-theme="dark">
+  <div class="container-fluid">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+      <span class="aq-mark">AQ</span>
+      <span class="d-none d-sm-inline">ABUTRON QUANT</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#aqNav"
+            aria-controls="aqNav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="aqNav">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+          <li class="nav-item"><a class="nav-link active" href="/">Overview</a></li>
+          <li class="nav-item"><a class="nav-link" href="/positions">Positions</a></li>
+          <li class="nav-item"><a class="nav-link" href="/signals">Signals</a></li>
+          <li class="nav-item"><a class="nav-link" href="/risk">Risk & Prop</a></li>
+          <li class="nav-item"><a class="nav-link" href="/journal">Journal</a></li>
+          <li class="nav-item"><a class="nav-link" href="/research">Research</a></li>
+          <li class="nav-item"><a class="nav-link" href="/system">System</a></li>
+      </ul>
+      <div class="d-flex flex-wrap align-items-center gap-2 pb-2 pb-lg-0">
+        <span id="modePill" class="pill">connecting</span>
+        <span id="safetyPill" class="pill" title="restart safety, reconciliation and feed health">safety —</span>
+        <span id="haltPill" class="pill">state —</span>
+        <span id="clock" class="mono small text-secondary d-none d-md-inline">--:--:--</span>
+        <button id="btnToken" class="btn btn-outline-light btn-sm" title="operator token for control endpoints">Token</button>
+        <div class="btn-group btn-group-sm" role="group" aria-label="operator controls">
+          <button id="btnFlatten" class="btn btn-outline-warning" data-control="flatten"
+                  title="close every open position at the touch">Flatten</button>
+          <button id="btnKill" class="btn btn-outline-danger" data-control="kill"
+                  title="flatten and block all new orders">Kill</button>
+          <button id="btnRearm" class="btn btn-outline-success" data-control="rearm"
+                  title="release the kill switch">Re-arm</button>
+        </div>
+      </div>
     </div>
   </div>
-  <div class="topmeta">
-    <span id="modePill" class="pill">connecting</span>
-    <span id="safetyPill" class="pill" title="restart safety, reconciliation and feed health">safety —</span>
-    <span id="clock" class="mono muted">--:--:--</span>
-    <button id="btnFlatten" class="btn ghost" title="Close all positions">Flatten</button>
-    <button id="btnKill" class="btn danger" title="Block all new orders">Kill</button>
-    <button id="btnRearm" class="btn ghost" title="Release kill switch">Re-arm</button>
-  </div>
-</header>
+</nav>
 
-<section class="kpis">
-  <div class="kpi"><span class="k">Equity</span><b id="kEquity" class="mono">—</b><em id="kEquitySub" class="muted mono"></em></div>
-  <div class="kpi"><span class="k">Day P&amp;L</span><b id="kDayPnl" class="mono">—</b><em id="kDaySub" class="muted mono"></em></div>
-  <div class="kpi"><span class="k">Open risk</span><b id="kOpenRisk" class="mono">—</b><em class="muted mono">at stop</em></div>
-  <div class="kpi"><span class="k">Trades</span><b id="kTrades" class="mono">—</b><em id="kTradesSub" class="muted mono"></em></div>
-  <div class="kpi"><span class="k">Win rate · Avg R</span><b id="kWin" class="mono">—</b><em id="kWinSub" class="muted mono"></em></div>
-  <div class="kpi"><span class="k">Prop status</span><b id="kProp" class="mono">—</b><em id="kPropSub" class="muted mono"></em></div>
-</section>
-
-<main class="grid">
-  <section class="panel span2">
-    <div class="panel-head"><h2>Decision engine</h2><span class="hint" id="engineHint"></span></div>
-    <div class="table-wrap">
-      <table class="tbl" id="signalsTbl">
-        <thead><tr>
-          <th>Instrument</th><th>Price</th><th>Regime</th><th>Trend M5/M15/H1</th>
-          <th>Conviction</th><th>Agent votes</th><th>Decision</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel" id="propPanel">
-    <div class="panel-head"><h2>Prop challenge</h2><span id="propVerdict" class="pill">—</span></div>
-    <div id="propBody" class="prop-body"><p class="muted">no challenge attached</p></div>
-  </section>
-
-  <section class="panel span2">
-    <div class="panel-head"><h2>Open positions</h2><span class="hint" id="posHint"></span></div>
-    <div class="table-wrap">
-      <table class="tbl" id="positionsTbl">
-        <thead><tr><th>Instrument</th><th>Side</th><th>Lots</th><th>Entry</th><th>Stop</th>
-        <th>Target</th><th>P&amp;L</th><th>Broker</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><h2>Why trades were not taken</h2><span class="hint">coded rejections</span></div>
-    <div id="rejections" class="bars"></div>
-    <div class="panel-head sub-head"><h2>Risk governor</h2></div>
-    <div id="riskBody" class="risk-body"></div>
-  </section>
-
-  <section class="panel span2">
-    <div class="panel-head"><h2>Equity</h2><span class="hint" id="eqHint"></span></div>
-    <canvas id="equity" height="150"></canvas>
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><h2>Router</h2><span class="hint">broker connectivity</span></div>
-    <div id="routerBody" class="risk-body"></div>
-  </section>
-
-  <section class="panel span2">
-    <div class="panel-head"><h2>Closed trades</h2><span class="hint" id="tradeHint"></span></div>
-    <div class="table-wrap scroll">
-      <table class="tbl" id="tradesTbl">
-        <thead><tr><th>Time</th><th>Instrument</th><th>Side</th><th>Lots</th><th>Entry</th>
-        <th>Exit</th><th>P&amp;L</th><th>R</th><th>Exit reason</th><th>Regime</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><h2>Agent weights</h2><span class="hint">reflection memory</span></div>
-    <div id="weights" class="weights"></div>
-    <div class="panel-head sub-head"><h2>Event log</h2></div>
-    <div id="events" class="events"></div>
-  </section>
+<main class="container-fluid aq-main" id="page">
+  <noscript><div class="alert alert-warning">This dashboard is a live view over the engine API and needs JavaScript.</div></noscript>
 </main>
 
-<footer class="foot">
-  <span id="footNote">Paper/simulation mode. Synthetic results are not a claim of profitability and do not imply a prop-firm pass.</span>
+<footer class="aq-foot container-fluid d-flex flex-wrap justify-content-between gap-2">
+  <span>ABUTRON QUANT · single decision engine · Deriv + FP Markets MT5 · prop guard</span>
+  <span>Paper and synthetic results are not a claim of profitability and do not imply a prop-firm pass.</span>
 </footer>
-<script src="/static/app.js"></script>
+
+<script src="/static/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+<script src="/static/portal.js"></script>
 </body>
 </html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="Per-instrument regime, agent votes and every coded rejection.">
+<title>ABUTRON QUANT — signals & rejections</title>
+<!-- Bootstrap 5.3.3 is vendored in the repo: the desk must render with no internet. -->
+<link rel="stylesheet" href="/static/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/static/theme.css">
+</head>
+<body data-page="signals">
+<nav class="navbar navbar-expand-lg aq-nav sticky-top" data-bs-theme="dark">
+  <div class="container-fluid">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+      <span class="aq-mark">AQ</span>
+      <span class="d-none d-sm-inline">ABUTRON QUANT</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#aqNav"
+            aria-controls="aqNav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="aqNav">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+          <li class="nav-item"><a class="nav-link" href="/">Overview</a></li>
+          <li class="nav-item"><a class="nav-link" href="/positions">Positions</a></li>
+          <li class="nav-item"><a class="nav-link active" href="/signals">Signals</a></li>
+          <li class="nav-item"><a class="nav-link" href="/risk">Risk & Prop</a></li>
+          <li class="nav-item"><a class="nav-link" href="/journal">Journal</a></li>
+          <li class="nav-item"><a class="nav-link" href="/research">Research</a></li>
+          <li class="nav-item"><a class="nav-link" href="/system">System</a></li>
+      </ul>
+      <div class="d-flex flex-wrap align-items-center gap-2 pb-2 pb-lg-0">
+        <span id="modePill" class="pill">connecting</span>
+        <span id="safetyPill" class="pill" title="restart safety, reconciliation and feed health">safety —</span>
+        <span id="haltPill" class="pill">state —</span>
+        <span id="clock" class="mono small text-secondary d-none d-md-inline">--:--:--</span>
+        <button id="btnToken" class="btn btn-outline-light btn-sm" title="operator token for control endpoints">Token</button>
+        <div class="btn-group btn-group-sm" role="group" aria-label="operator controls">
+          <button id="btnFlatten" class="btn btn-outline-warning" data-control="flatten"
+                  title="close every open position at the touch">Flatten</button>
+          <button id="btnKill" class="btn btn-outline-danger" data-control="kill"
+                  title="flatten and block all new orders">Kill</button>
+          <button id="btnRearm" class="btn btn-outline-success" data-control="rearm"
+                  title="release the kill switch">Re-arm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid aq-main" id="page">
+  <noscript><div class="alert alert-warning">This dashboard is a live view over the engine API and needs JavaScript.</div></noscript>
+</main>
+
+<footer class="aq-foot container-fluid d-flex flex-wrap justify-content-between gap-2">
+  <span>ABUTRON QUANT · single decision engine · Deriv + FP Markets MT5 · prop guard</span>
+  <span>Paper and synthetic results are not a claim of profitability and do not imply a prop-firm pass.</span>
+</footer>
+
+<script src="/static/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+<script src="/static/portal.js"></script>
+</body>
+</html>

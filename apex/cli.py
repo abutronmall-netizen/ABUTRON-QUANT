@@ -21,13 +21,14 @@ import time
 from typing import Optional
 
 from . import __version__
-from .backtest import BacktestRequest, render_markdown, run_backtest
+from .backtest import ANCHOR_TS, BacktestRequest, render_markdown, run_backtest
 from .config import broker_credentials, load_config, risk_from
 from .live import LiveConfig, LiveRunner
 from .prop import PROFILES, get_profile, plan_for
 from .risk import RiskConfig
 from .store import Store
 from .strategy import StrategyProfile
+from .symbols import DEFAULT_SYMBOLS, parse_symbols
 from .timeutil import tf_seconds
 
 _tf_seconds = tf_seconds   # backwards-compatible alias
@@ -43,7 +44,7 @@ def _prop_arg(value):
 
 
 def _split(s: str) -> list[str]:
-    return [x.strip() for x in s.split(",") if x.strip()]
+    return parse_symbols(s)
 
 
 def _symbol_map(broker: str, symbols: list[str]) -> dict[str, list[str]]:
@@ -62,7 +63,7 @@ def cmd_serve(args) -> int:
     cfg = load_config(args.config)
     creds = broker_credentials(cfg)
     symbols = _split(args.symbols) if args.symbols else \
-        cfg["symbols_by_broker"].get(args.broker, ["R_25", "R_50", "R_75"])
+        cfg["symbols_by_broker"].get(args.broker, DEFAULT_SYMBOLS)
 
     mode = args.mode or ("paper" if args.demo else cfg["mode"])
     live = LiveConfig(
@@ -152,6 +153,7 @@ def cmd_backtest(args) -> int:
         prefer_cached=not args.synthetic_only,
         tick_path=args.ticks or "",
         news_calendar=args.news or "",
+        anchor_ts=args.anchor_ts if args.anchor_ts is not None else ANCHOR_TS,
     )
     print(f"[backtest] {req.symbols_by_broker} bars={req.bars} strategy={req.strategy} "
           f"prop={req.prop_profile or 'none'} seed={req.seed}")
@@ -485,13 +487,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp):
         sp.add_argument("--config", default=None, help="JSON config path")
-        sp.add_argument("--symbols", default="R_25,R_50,R_75")
+        sp.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
         sp.add_argument("--broker", default="deriv", choices=["deriv", "mt5", "sim", "both"])
         sp.add_argument("--tf", default="M5")
         sp.add_argument("--strategy", default="scalp_balanced",
                         choices=["scalp_fast", "scalp_balanced", "prop_conservative"])
         sp.add_argument("--prop", default=None, help="prop profile name or JSON path")
         sp.add_argument("--balance", type=float, default=10_000.0)
+        sp.add_argument("--anchor-ts", type=float, default=None,
+                        help="start of the synthetic tape (default: a fixed anchor, so seeded runs reproduce)")
         sp.add_argument("--trend-strength", type=float, default=1.2,
                         help="synthetic trend persistence (validation only)")
         sp.add_argument("--out", default=None)

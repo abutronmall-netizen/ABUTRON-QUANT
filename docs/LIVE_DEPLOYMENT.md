@@ -68,7 +68,7 @@ python3 -m apex serve --mode mt5   --config config/mt5_fpmarkets.json
 With `live_orders: false` (default), the adapters simulate fills. Market data is real; orders are
 not transmitted. Use this to verify:
 
-* symbols resolve and ticks arrive (dashboard "Decision engine" prices move);
+* symbols resolve and ticks arrive (Overview portal: the decision-engine prices move);
 * regime and agent votes make sense for the session;
 * rejections are explainable (`NO_STRUCTURE`, `SPREAD_TOO_WIDE`, `PROP_DAY_BUDGET`, …);
 * the prop panel shows the right floors for your profile.
@@ -148,7 +148,8 @@ python3 -m unittest tests.test_live -v
 
 * Bind to `127.0.0.1` (default) and put a reverse proxy with authentication in front.
 * Set `APEX_DASHBOARD_TOKEN` (or `--token`). Every POST (`kill`, `rearm`, `flatten`) then requires
-  `X-Apex-Token`; the dashboard asks for it once and keeps it in that browser only.
+  `X-Apex-Token`; the portals ask for it once (the **Token** button in the navbar) and keep it in
+  that browser only. The System portal shows the same `apex verify` checklist without a shell.
 * Cross-origin POSTs are rejected outright, so a malicious page cannot flatten your book.
 * The static file handler refuses any path that resolves outside `apex/api/static`.
 
@@ -243,7 +244,8 @@ therefore the risk state) and defaults to paper mode.
 
 * daily: `equity` ticks present, `orders` all acked, no `reconcile` events;
 * daily: prop panel — daily loss used < 40%, total room > 60%;
-* weekly: attribution by strategy/symbol/exit reason in the dashboard or `apex report`.
+* weekly: attribution by strategy/symbol/exit reason on the **Journal** portal, or `apex report`;
+  re-read **Research** after any parameter change and compare the same anchored seeds.
 
 ### Incident response
 

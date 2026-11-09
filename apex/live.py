@@ -37,13 +37,14 @@ from .prop import PropGuard, get_profile, plan_for
 from .risk import RiskConfig
 from .store import Store, compute_metrics
 from .strategy import StrategyProfile
+from .symbols import DEFAULT_SYMBOLS_BY_BROKER
 
 
 @dataclass
 class LiveConfig:
     mode: str = "paper"                       # paper | deriv | mt5
     symbols_by_broker: dict[str, list[str]] = field(
-        default_factory=lambda: {"deriv": ["R_25", "R_50", "R_75"]})
+        default_factory=lambda: dict(DEFAULT_SYMBOLS_BY_BROKER))
     tf: str = "M5"
     strategy: str = "scalp_balanced"
     prop_profile: Optional[str] = "abutron_inhouse"
@@ -490,11 +491,18 @@ class LiveRunner:
         snap["metrics"] = compute_metrics([t.as_dict() for t in self.engine.trades],
                                           initial_equity=self.cfg.initial_balance)
         snap["journal_metrics"] = self.store.metrics()
+        snap["equity_history"] = self.store.equity_curve(limit=720)
         snap["feed_health"] = dict(self.feed_monitor.stats)
         snap["journal_bytes"] = self.store.size_bytes()
         snap["events"] = self.store.recent_events(40)
         snap["signals"] = self.store.recent_signals(30)
         snap["symbol_names"] = {s: SYMBOL_NAMES.get(s, s) for s in self.engine.states}
+        snap["db_path"] = self.store.path
+        hb = getattr(self.cfg, "heartbeat_path", "") or ""
+        try:
+            snap["heartbeat_age_s"] = round(time.time() - os.path.getmtime(hb), 1) if hb and os.path.exists(hb) else None
+        except OSError:
+            snap["heartbeat_age_s"] = None
         snap["safety"] = {
             "boot_policy": self.cfg.boot_policy,
             "persist_state": self.cfg.persist_state,

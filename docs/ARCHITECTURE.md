@@ -192,8 +192,34 @@ Design rules enforced here:
   discrepancy.
 * **The watchdog is not the engine.** It cannot open risk, only reduce it, and it runs as its own
   process precisely because the failure it handles is "the engine is gone".
-* **Auth is on the mutation surface only.** Reads stay open for the dashboard; POSTs need a token
+* **Auth is on the mutation surface only.** Reads stay open for the portals; POSTs need a token
   and a same-origin request.
+
+## Portals (the dashboard)
+
+One stdlib `ThreadingHTTPServer`, seven static pages, one renderer (`api/static/portal.js`), no
+build step and no CDN:
+
+```
+GET  /                     Overview      KPIs · decision engine · prop · risk · equity · rejections
+GET  /positions            Positions     open book · pending orders · exposure · closed trades
+GET  /signals              Signals       per-symbol regime and votes · coded rejections · signal log
+GET  /risk                 Risk & Prop   loss/drawdown/heat budgets · sessions · challenge · controls
+GET  /journal              Journal       equity curve · Sharpe/Sortino/PF · attribution
+GET  /research             Research      runs/**/summary.json · sweep.json · propsim_*.json
+GET  /system               System        router · accounts · feed health · verify checklist
+
+GET  /api/state            the whole snapshot (2 s poll, or /api/stream for SSE)
+GET  /api/trades           the closed-trade blotter
+GET  /api/health           liveness + version
+GET  /api/verify           `apex verify` against the runner's journal (read-only, cached 30 s)
+GET  /api/research         artefacts under runs/, never executed
+POST /api/control/{kill,flatten,rearm}   operator token + same-origin
+```
+
+The pages are views, not a second implementation: nothing is recomputed client-side, missing data
+renders as `—`, and session metrics are kept separate from journal metrics. Bootstrap 5.3.3 lives in
+`api/static/vendor/bootstrap/` so the dashboard renders with the network down.
 
 Rules that are deliberately *not* here: distributed consensus, a message bus, multi-process
 sharding. One account, one challenge, one process — a second replica of a trading engine is a

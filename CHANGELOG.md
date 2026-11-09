@@ -3,6 +3,68 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.4.0 — the portals, the whole volatility curve, and a tape that repeats
+
+Three things a desk needs before it can be believed: one place to look, one list of instruments,
+and numbers that do not change when you re-run them.
+
+**Every portal is now a Bootstrap page (`apex serve`).** The single hand-rolled page is gone.
+Seven pages — Overview, Positions, Signals, Risk & Prop, Journal, Research, System — share one
+theme and one renderer (`apex/api/static/portal.js`), served on clean URLs (`/`, `/positions`,
+`/signals`, `/risk`, `/journal`, `/research`, `/system`).
+- Bootstrap **5.3.3 is vendored** at `apex/api/static/vendor/bootstrap/` (css 233 kB, bundle js
+  81 kB, MIT licence). No CDN, no build step, no network call: the dashboard must work in an
+  offline preview iframe and on a desk with a dead uplink.
+- Mobile-first: collapsing navbar, `table-responsive` tables, fluid KPI grid, canvas equity that
+  redraws on resize. The same markup is legible on a phone.
+- Every previous panel is preserved — decision engine, prop challenge, open positions, coded
+  rejections, risk governor, router, closed trades, event log, equity — and the two missing
+  portals are added: **Journal** (equity curve, Sharpe/Sortino/PF, attribution by strategy,
+  symbol, broker, exit reason and regime, session-vs-journal side by side) and **Research**
+  (backtest runs, sweeps, prop simulations read from `runs/`, with the synthetic-tape caveat
+  printed above the numbers).
+- Control stays separated from observation: kill/flatten/re-arm need `X-Apex-Token` and a
+  same-origin POST; the token lives in `localStorage` and is asked for once.
+
+**New read-only endpoints for the pages.** `/api/verify` runs the deployment checklist against the
+runner's own journal (cached 30 s) instead of making the operator run a CLI command; `/api/research`
+lists `runs/**/summary.json`, `sweep.json` and `propsim_*.json` (nested one level, size-capped,
+never executing anything). `/api/health` now reports `__version__` rather than a hardcoded string.
+
+**The traded universe lives in one place (`apex/symbols.py`).** `R_10` and `R_100` were tradeable
+in the backtester but absent from every default, so the desk's default book was the middle of the
+curve — the hardest subset to trade, chosen by accident.
+- `VOLATILITY_INDICES = [R_10, R_25, R_50, R_75, R_100]`; `DEFAULT_SYMBOLS` is all five.
+- `DEFAULT_SYMBOLS_BY_BROKER` is used by `LiveConfig`, `DEFAULT_CONFIG`, `BacktestRequest`,
+  `SweepRequest` and the CLI, so live, backtest, sweep and prop-sim trade the same book.
+- `parse_symbols()` accepts `R_10,R_50`, `R10 R50` or a list, de-duplicates and normalises the
+  volatility spelling while leaving broker suffixes (`EURUSD.m`) untouched.
+- Sample configs updated to the five-index book.
+
+**A seeded run now repeats.** The synthetic tape used to start at `time.time()`, so `--seed 7`
+produced a different tape every minute and a published reference run could not be checked.
+`BacktestRequest.anchor_ts` (default `backtest.ANCHOR_TS`) fixes the tape; `--anchor-ts` overrides
+it. Tick replay instead starts its clock at the first recorded tick, so a 2026 recording is not
+judged against a 2023 session clock (`_clock_start`). Two test regressions cover both.
+
+**Snapshot fields the portals need.** `risk.snapshot(positions)` now also returns heat in money and
+percent, the session windows, open-position count, and `max_open_positions` /
+`cooldown_after_loss_s` / `cooldown_remaining_s`; `live.snapshot()` adds `equity_history`,
+`db_path` and `heartbeat_age_s`.
+
+**Published numbers refreshed, honestly.** With the anchored tape the default five-index book
+returns 48 trades / −6.7% / PF 0.49 / maxDD 8.23% over 3000 M5 bars, and the middle-three book
+59 trades / −6.6% / PF 0.60. The previous "structured tape: 6/6 seeds positive" claim no longer
+holds (4/6, mean avgR +0.05) and has been removed rather than left standing. `propsim` at
+`abutron_inhouse` over 6 seeds: pass 0%, breach 16.7%.
+
+Layout: `apex/api/static/` gains `portal.js` (renderer), `theme.css` (Bootstrap overrides) and seven
+HTML shells; `app.js` and `style.css` are deleted; `apex/symbols.py` is new.
+
+Tests: 276 (was 259). New coverage: symbol defaults across live/config/backtest/CLI/sweep, tape
+determinism, tick-replay clock, every portal route, Bootstrap assets present and served, portals
+free of network URLs, `/api/research` and `/api/verify` shapes.
+
 ## 2.3.1 — order prices and reconciliation keys, properly
 
 Two defects from 2.3.0 were only half-fixed. Both are about the evidence an

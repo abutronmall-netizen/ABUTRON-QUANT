@@ -1,5 +1,18 @@
 # Audit response — defect by defect
 
+> **2.4.0 addendum.** Three gaps this document could not close from the audit alone were closed
+> afterwards, and they belong in the same ledger: **(a)** the traded universe had `R_10`/`R_100`
+> in the backtester but in no default, so the desk traded the middle of the curve by accident —
+> now `apex/symbols.py` is the single source of truth and the default book is all five volatility
+> indices, live and in every research command; **(b)** the dashboard was one hand-rolled page that
+> did not work on a phone and had no view of the journal or of research artefacts — it is now seven
+> Bootstrap portals (Overview, Positions, Signals, Risk & Prop, Journal, Research, System) with
+> assets vendored offline, plus read-only `/api/verify` and `/api/research`; **(c)** a seeded
+> backtest did not repeat because the synthetic tape started at the wall clock — `anchor_ts` fixes
+> the tape and the published reference numbers were re-measured rather than reused. Details in
+> `CHANGELOG.md` and `docs/DASHBOARD.md`.
+
+
 The source audit of ABUTRON APEX (9 Nov 2026) listed four P0s, three P1s and one P2. This
 document maps each to the code that answers it and the test that proves the answer holds.
 

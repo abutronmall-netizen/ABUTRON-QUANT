@@ -14,6 +14,8 @@ Two jobs:
 """
 from __future__ import annotations
 
+from ..symbols import DEFAULT_SYMBOLS_BY_BROKER
+
 import itertools
 import json
 import os
@@ -72,7 +74,8 @@ def score_result(res: BacktestResult, prop_weight: float = 1.0) -> float:
 
 @dataclass
 class SweepRequest:
-    symbols_by_broker: dict[str, list[str]]
+    symbols_by_broker: dict[str, list[str]] = field(
+        default_factory=lambda: dict(DEFAULT_SYMBOLS_BY_BROKER))
     bars: int = 2500
     strategy: str = "scalp_balanced"
     prop_profile: Optional[str] = None
@@ -141,7 +144,7 @@ def sweep(req: SweepRequest) -> dict:
 class PropSimRequest:
     profile: str = "ftmo_2step"
     symbols_by_broker: dict[str, list[str]] = field(
-        default_factory=lambda: {"deriv": ["R_25", "R_50", "R_75"]})
+        default_factory=lambda: dict(DEFAULT_SYMBOLS_BY_BROKER))
     bars: int = 2500
     seeds: int = 12
     strategy: str = "prop_conservative"

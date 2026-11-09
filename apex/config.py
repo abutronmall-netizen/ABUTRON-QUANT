@@ -6,6 +6,8 @@ files or logs.
 """
 from __future__ import annotations
 
+from .symbols import DEFAULT_SYMBOLS_BY_BROKER, parse_symbols
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -16,7 +18,7 @@ from .risk import RiskConfig
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "paper",
-    "symbols_by_broker": {"deriv": ["R_25", "R_50", "R_75"]},
+    "symbols_by_broker": dict(DEFAULT_SYMBOLS_BY_BROKER),
     "tf": "M5",
     "strategy": "scalp_balanced",
     "prop_profile": "abutron_inhouse",

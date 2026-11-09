@@ -12,8 +12,9 @@ The harness exists to answer three questions in order. Skipping a step is how sy
 ## 1. Machinery
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests      # 276 tests
 python3 -m apex doctor
+python3 -m apex verify --run runs/live      # the same checklist the System portal shows
 ```
 
 The integration tests assert the invariants that matter: no trading during warmup, entries priced
@@ -31,17 +32,35 @@ Its `trend_strength` knob controls how much genuine persistence the tape has.
 | 1.5 | mild structure | around breakeven |
 | 2.5–3.0 | clear regimes | positive avg R on most seeds |
 
+The tape is **anchored**, not clocked: `BacktestRequest.anchor_ts` (default
+`backtest.ANCHOR_TS`) fixes where the synthetic series starts, so `--seed 7` reproduces the same
+bars tomorrow, on another machine, in CI. `--anchor-ts <epoch>` moves the anchor deliberately; tick
+replay instead starts its clock at the first recorded tick. Before 2.4.0 the tape began at
+`time.time()`, which meant a published reference run could not be checked an hour later — if you
+find an older report in `runs/`, assume its tape no longer exists.
+
 This is the honesty test. If the engine were leaking future information, it would look profitable
-at 0.35 too. It does not:
+on the near-random tape too. Measured on this build (default five-index book, 4000 bars, seeds 1–6):
 
 ```bash
 for s in 1 2 3 4 5 6; do
-  python3 -m apex backtest --symbols R_25,R_50,R_75 --bars 2500 --seed $s --trend-strength 0.35 --no-record
+  python3 -m apex backtest --bars 4000 --seed $s --trend-strength 0.35 --no-record
 done
 ```
 
-Same command at `--trend-strength 2.5` flips the sign on most seeds. That is the signature of a
-system with no look-ahead and a real (if modest) ability to follow structure.
+| `--trend-strength` | mean avg R | median avg R | seeds positive |
+| --- | --- | --- | --- |
+| 0.35 (near random walk) | +0.06 | **−0.12** | 2/6 |
+| 2.5 (clear regimes) | +0.05 | +0.04 | 4/6 |
+
+That is not a profit curve and should not be read as one. The mean at 0.35 is carried by a single
+seed at +1.09R while the median is negative — the signature of an engine that is not cheating, and
+of a scalper whose costs are roughly the size of whatever weak edge exists. The 2.5 row moves the
+median above zero on more seeds and still does not survive as a claim: five thousand bars of a
+generator we wrote is not a market.
+
+Do not tune against these numbers. Anything you find at 0.35 that looks profitable is a bug in the
+harness, and the correct response is to fix the harness, not to ship the configuration.
 
 **Never quote these numbers as performance.** They describe the harness.
 

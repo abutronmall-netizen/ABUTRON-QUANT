@@ -890,7 +890,7 @@ class TradingEngine:
             } for s in self.states.values()],
             "reconcile_diffs": len(self._last_diffs),
             "local_stops": sum(1 for p in self.positions.values() if p.meta.get("local_stop")),
-            "risk": self.risk_engine.snapshot(),
+            "risk": self.risk_engine.snapshot(list(self.positions.values())),
             "prop": self.prop.status(time.time()) if self.prop is not None else None,
             "router": self.router.snapshot(),
             "rejections": dict(sorted(self.rejections.items(), key=lambda kv: -kv[1])[:12]),

@@ -39,13 +39,15 @@ No dependencies. Python 3.10+.
 ```bash
 # 1. see the desk running with a synthetic tape and a paper broker
 python3 -m apex serve --demo --port 8000 --preload 1200 --speed 0.8
-#    → http://localhost:8000
+#    → http://localhost:8000  — seven portals (Overview, Positions, Signals,
+#      Risk & Prop, Journal, Research, System), Bootstrap 5, responsive
 
 # 2. check what is wired up on this machine
 python3 -m apex doctor
 
-# 3. backtest the production engine, prop rules attached
-python3 -m apex backtest --symbols R_25,R_50,R_75 --bars 4000 --prop ftmo_2step
+# 3. backtest the production engine on the whole volatility curve, prop rules attached
+python3 -m apex backtest --bars 4000 --prop ftmo_2step
+#    default book: R_10, R_25, R_50, R_75, R_100 (--symbols overrides it)
 #    → runs/bt_<ts>/report.md  (trades.csv, equity.csv, summary.json)
 
 # 4. how often does a challenge survive? (many seeds, honest statistics)
@@ -57,8 +59,45 @@ python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
 # 6. tests
-python3 -m unittest discover -s tests      # 259 tests
+python3 -m unittest discover -s tests      # 276 tests
 ```
+
+---
+
+## The portals
+
+`apex serve` is not one page with everything on it. It is seven, all served by the same stdlib
+server, all reading the same snapshot, all built on **Bootstrap 5.3.3 vendored in the repository** —
+no CDN, no build step, nothing fetched at runtime, because a desk that needs the internet to show
+you its own risk is a desk you cannot trust on a bad connection.
+
+| Portal | URL | The question it answers |
+| --- | --- | --- |
+| **Overview** | `/` | What is the desk doing *now*? KPIs, decision engine, prop verdict, live risk, equity, rejections. |
+| **Positions** | `/positions` | What am I holding, at what price, with which stop — and which accepted orders have not filled? |
+| **Signals** | `/signals` | Why did (or didn't) this instrument trade? Regime, agent votes, conviction, coded rejection log. |
+| **Risk & Prop** | `/risk` | How much of the daily/drawdown/heat budget is gone, what the challenge demands, and the kill controls. |
+| **Journal** | `/journal` | What actually happened over time: equity curve, Sharpe/Sortino/PF, attribution by strategy, symbol, broker, exit and regime. |
+| **Research** | `/research` | What did the backtests, sweeps and prop simulations say? Artefacts from `runs/`, with the synthetic-tape caveat attached. |
+| **System** | `/system` | Is the plumbing healthy? Router, accounts, feed gaps, clock drift, heartbeat, and the `apex verify` checklist. |
+
+Design rules that decided the rewrite:
+
+* **Mobile first.** Bootstrap's grid, the collapsing navbar and `table-responsive` wrapping mean the
+  same markup works on a phone and on a 4K desk. Nothing is hover-only; nothing needs a wide screen
+  to be legible.
+* **Numbers are honest or they are absent.** Missing data renders as `—`, never as `0`. Session-scoped
+  metrics and journal-wide metrics are shown side by side and labelled, because averaging across
+  runs is how a dashboard lies.
+* **Control is separated from observation.** Reads (`/api/state`, `/api/trades`, `/api/verify`,
+  `/api/research`, `/api/stream`) need nothing. Kill, flatten and re-arm need the operator token
+  (`--token`), are same-origin only, and are journalled as control events. The browser keeps the
+  token in `localStorage` and nothing else.
+* **No hidden arithmetic.** The dashboard renders engine decisions; it never recomputes a P&L, a
+  size, or a regime of its own.
+
+Pages are plain HTML over the API: `/api/state` every two seconds (or `/api/stream` for SSE),
+`/api/trades` for the blotter, `/api/verify` for the checklist, `/api/research` for `runs/`.
 
 ---
 
@@ -69,16 +108,25 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **259 tests pass** in ~13 s |
-| Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
-| Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
-| Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
-| Prop pass rate (8% target, 28 synthetic days) | `propsim --profile abutron_inhouse --seeds 8` | pass 0%, breach 0%, median profit +1.6% |
+| Test suite | `python3 -m unittest discover -s tests` | **276 tests pass** in ~15 s |
+| Same seed, same answer | `backtest --bars 3000 --seed 7`, twice | identical metrics (fixed tape anchor, `backtest.ANCHOR_TS`) |
+| Default book, seed 7 | `backtest --bars 3000 --seed 7` | 48 trades, win 22.9%, P&L **−667.94**, PF 0.49, avgR −0.29, maxDD 8.23% → governor halts |
+| Middle three, seed 7 | `backtest --symbols R_25,R_50,R_75 --bars 3000 --seed 7` | 59 trades, win 27.1%, P&L **−655.93**, PF 0.60, avgR −0.23, maxDD 8.15% |
+| Near random walk, 6 seeds | `backtest --bars 4000 --trend-strength 0.35 --seed 1..6` | mean avgR **+0.06**, median **−0.12**, **2/6 seeds positive** |
+| Structured tape, 6 seeds | same at `--trend-strength 2.5` | mean avgR **+0.05**, median **+0.04**, 4/6 seeds positive |
+| Prop survivability (8% target) | `propsim --profile abutron_inhouse --bars 1500 --seeds 6` | pass **0%**, breach **16.7%**, median profit −1.5%, median DD 3.2% |
 
-The random-walk row is the important one: a system with look-ahead would look profitable there
-too. It does not. The structured row shows the pipeline can capture real persistence when the tape
-provides it. The prop rows show the guard prevents self-inflicted breaches while an 8% target
-remains unreachable without a genuine edge — exactly the honest state of affairs.
+Read the two backtest rows first: **the default book loses money on the synthetic tape.** That is the
+honest headline, and it is why this project ships a hard risk governor instead of a returns chart.
+The seed-dispersion rows are the second lesson — one seed at 0.35 reaches +1.09R while the median is
+−0.12R, so anyone quoting a single backtest is quoting a coin flip. The prop row says the same from
+the other side: 0% pass with a 16.7% breach rate means the guard is the only thing keeping the
+account intact.
+
+Every run above starts from a fixed tape anchor (`--anchor-ts`, default `backtest.ANCHOR_TS`) rather
+than the wall clock, so the numbers reproduce on another day. Before 2.4.0 the same seed produced a
+different tape every minute — which is how a stale "reference" run can look healthy while the code
+that produced it has moved on.
 
 ---
 
@@ -98,6 +146,10 @@ remains unreachable without a genuine edge — exactly the honest state of affai
 | Order prices journalled (`requested_price`) and reconciled by `(symbol, ticket)` | **Working** | `orders` table, `router.reconcile`; `tests/test_reconciliation` |
 | Dashboard with rejection reasons and prop progress | **Working** | `apex/api/` |
 | Walk-forward sweep, prop pass-rate simulation | **Working** | `apex/research/optimize.py` |
+| One symbol universe: R_10…R_100 by default, per-broker books | **Working** | `apex/symbols.py`; `tests/test_symbols.py` |
+| Reproducible research tape (fixed anchor, seeded) | **Working** | `BacktestRequest.anchor_ts`, `--anchor-ts`; `tests/test_symbols.py` |
+| Seven Bootstrap portals, offline assets, mobile-first | **Working** | `apex/api/static/` (vendored BS 5.3.3); `tests/test_api.py` |
+| Read-only `/api/verify` and `/api/research` endpoints | **Working** | `apex/api/server.py`; `tests/test_api.py` |
 | Restart safety: broker book adopted/flattened on boot | **Working** | `engine.boot_sync`, `tests/test_live.py` |
 | Durable risk/prop state across restarts | **Working** | journal `runtime_state`, `engine.export_state` |
 | Supervised Deriv socket: staleness → reconnect → resync | **Working** | `FeedSupervisor` in `apex/live.py` |
@@ -214,7 +266,7 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 
 | Command | Purpose |
 | --- | --- |
-| `apex serve --demo` | paper engine + dashboard (default preview) |
+| `apex serve --demo` | paper engine + seven portals on `:8000` (see [The portals](#the-portals)) |
 | `apex serve --mode deriv\|mt5` | live-data engine, dry-run unless `--live`; `--token`, `--news`, `--boot-policy` |
 | `apex backtest` | event-driven backtest on the production engine |
 | `apex sweep` | parameter sweep with walk-forward reporting |
@@ -230,6 +282,8 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex prune --db runs/live/apex.db --days 14` | bound journal growth (keeps trades) |
 
 `--prop none` disables the guard; `--prop config/my_firm.json` loads your own terms.
+`--symbols` accepts `R_10,R_50` or `R10 R50` and defaults to the five volatility indices;
+`--anchor-ts <epoch>` moves the synthetic tape anchor when you deliberately want a different one.
 
 ## Configuration
 
@@ -254,17 +308,18 @@ apex/
   alerts.py          webhook/SMTP notifier (throttled, never blocks)
   watchdog.py        heartbeat monitor; flatten request the engine honours
   verify.py          the deployment checklist, mechanically
+  symbols.py         the traded universe: R_10-R_100 and per-broker books
   timeutil.py        the one definition of a timeframe
   data/              deriv (ws), mt5, synthetic/replay feed, ws client
   execution/         port interface, sim broker, deriv, mt5, router
   research/          sweep + prop pass-rate simulation
   ai/reviewer.py     optional Ollama reviewer (advisory or veto, always fail-open)
-  api/               dashboard server + static UI
+  api/               dashboard server; seven Bootstrap portals + vendored assets
   cli.py             command line
 docs/                architecture, audit response, prop playbook, deployment, research
 .github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
-tests/               259 unit + integration tests
+tests/               275 unit + integration tests
 ```
 
 ---

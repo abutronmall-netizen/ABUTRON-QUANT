@@ -320,11 +320,21 @@ class RiskEngine:
         return Decision.block(code, reason)
 
     # ------------------------------------------------------------------ #
-    def snapshot(self) -> dict:
+    def snapshot(self, positions: Optional[list[Position]] = None) -> dict:
         st = self.state
         dd = (st.peak_equity - (st.day_start_equity + st.day_pnl)) / st.peak_equity * 100.0 \
             if st.peak_equity else 0.0
+        heat = self.open_risk_money(list(positions or []))
+        equity = (st.day_start_equity + st.day_pnl) or st.peak_equity or 0.0
         return {
+            "heat_money": round(heat, 2),
+            "heat_pct": round(heat / equity * 100.0, 3) if equity else 0.0,
+            "max_heat_pct": self.cfg.max_heat_pct,
+            "max_group_heat_pct": self.cfg.max_group_heat_pct,
+            "session_start_utc": self.cfg.session_start_utc,
+            "session_end_utc": self.cfg.session_end_utc,
+            "session_hours": {k: list(v) for k, v in (self.cfg.session_hours or {}).items()},
+            "open_positions": len(positions or []),
             "halted": st.halted, "halt_reason": st.halt_reason, "halt_kind": st.halt_kind,
             "day_pnl": round(st.day_pnl, 2), "day_trades": st.day_trades,
             "consecutive_losses": st.consecutive_losses,
@@ -337,5 +347,8 @@ class RiskEngine:
                 "max_daily_loss_pct": self.cfg.max_daily_loss_pct,
                 "max_total_drawdown_pct": self.cfg.max_total_drawdown_pct,
                 "max_trades_per_day": self.cfg.max_trades_per_day,
+                "max_open_positions": self.cfg.max_open_positions,
+                "cooldown_after_loss_s": self.cfg.cooldown_after_loss_s,
             },
+            "cooldown_remaining_s": max(0.0, round(st.cooldown_until - time.time(), 1)),
         }
