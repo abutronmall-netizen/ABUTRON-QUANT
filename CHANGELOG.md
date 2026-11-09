@@ -3,6 +3,23 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.2.0 — verified signal layer, AI review, CI
+
+- Signal layer tests: bounded agent votes, warmup silence, conviction
+  disagreement penalty, arbitration caps, reflection-weight adaptation.
+- **Fixed** `apex/ai/reviewer.py`: the prompt contained literal JSON braces and
+  went through `str.format`, so every review raised `KeyError` before a request
+  left the process.
+- The reviewer is now wired into the decision path (it previously was not, despite
+  being documented): advisory by default, veto optional, always fail-open, and the
+  engine itself refuses to let advisory mode block a trade.
+- Research harness tests: grid determinism, copy-not-mutate profiles, scoring
+  shape, sweep/propsim output contracts.
+- `apex report` covered by a test; CI workflow for Python 3.10-3.12 with doctor,
+  artifact and packaging checks.
+
+Tests: 209.
+
 ## 2.1.0 — operational layer
 
 Everything needed to leave the desk running without a human watching it.
