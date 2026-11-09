@@ -14,13 +14,12 @@ engine can trade FTMO, FundedNext, The5ers or a bespoke in-house challenge.
 """
 from __future__ import annotations
 
-import math
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Optional
 
-from .models import Candidate, Decision, Position, TradeRecord
+from .models import Candidate, Decision, TradeRecord
 from .risk import session_day
 
 

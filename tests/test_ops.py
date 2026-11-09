@@ -5,32 +5,41 @@ Every one of these exists because of a specific finding in the audit of the
 previous deployment. The tests assert the *behaviour that was missing*, not the
 shape of the code.
 """
-from dataclasses import replace
 import io
 import json
 import os
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from unittest import mock
 
 from apex.alerts import AlertConfig, Notifier, notifier_from_config
 from apex.engine import EngineConfig, TradingEngine
 from apex.execution.base import SymbolRegistry
 from apex.execution.deriv import DerivBroker
-from apex.execution.pending import PendingBook, PendingOrder
 from apex.execution.router import BrokerRouter, Route
 from apex.execution.sim import SimBroker, SimConfig
 from apex.live import FeedMonitor, LiveConfig
-from apex.models import (AccountState, Ack, Candidate, ExitReason, Order, Position,
-                         Quote, Side, SymbolSpec, TradeRecord, Vote)
+from apex.models import (
+    AccountState,
+    Ack,
+    Candidate,
+    ExitReason,
+    Order,
+    Position,
+    Quote,
+    Side,
+    SymbolSpec,
+    TradeRecord,
+    Vote,
+)
 from apex.risk import RiskConfig, RiskEngine
 from apex.store import Store
 from apex.verify import VerifyConfig, render_verify, verify_run
-from apex.watchdog import (FLATTEN_REQUEST_KEY, Watchdog, WatchdogConfig,
-                           clear_flatten_request, flatten_requested)
-
-from tests.test_live import FakePort, build as build_engine
+from apex.watchdog import FLATTEN_REQUEST_KEY, Watchdog, WatchdogConfig, flatten_requested
+from tests.test_live import FakePort
+from tests.test_live import build as build_engine
 
 
 # --------------------------------------------------------------------------- #
@@ -457,7 +466,6 @@ class TestOrderPriceOnTheWire(unittest.TestCase):
         self.engine._try_enter(_candidate(symbol="R_25", price=2400.0),
                               self.router.spec("R_25"), self.now, {"why": "test"})
         self.assertEqual(len(self.sim.fills), 1)
-        spec = self.router.spec("R_25")
         expected = self.engine.states["R_25"].last_quote.ask
         self.assertAlmostEqual(expected, 2400.5, places=6)
         # the sim fills at the ask it was quoted, so entry == expected fill
@@ -593,10 +601,36 @@ class TestJournalMaintenance(unittest.TestCase):
         self.assertTrue(store.prune(0)["skipped"])
         store.close()
 
+    def test_prune_truncates_the_wal(self):
+        """Deleted rows must not survive on disk inside the write-ahead log."""
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "apex.db")
+        store = Store(path)
+        for i in range(400):
+            store.record_equity(time.time() - 86400 * 30, "deriv", "A", 1.0 + i, 1.0)
+        store.prune(1.0)
+        wal = path + "-wal"
+        self.assertTrue(os.path.exists(wal))
+        self.assertEqual(os.path.getsize(wal), 0, "WAL still holds the deleted pages")
+        store.close()
+
+    def test_size_includes_the_wal(self):
+        """WAL mode: the main file alone understates a busy journal."""
+        tmp = tempfile.mkdtemp()
+        store = Store(os.path.join(tmp, "apex.db"))
+        for i in range(500):
+            store.record_equity(time.time(), "deriv", "A", 1.0 + i, 1.0)
+        parts = store.size_parts()
+        self.assertGreater(parts["main"], 0)
+        self.assertEqual(store.size_bytes(), sum(parts.values()))
+        self.assertGreaterEqual(store.size_bytes(), parts["main"])
+        self.assertGreater(parts["wal"], 0, "a journal written in WAL mode has a WAL file")
+        store.close()
+
     def test_vacuum_reports_ok(self):
         tmp = tempfile.mkdtemp()
         store = Store(os.path.join(tmp, "apex.db"))
-        for i in range(200):
+        for _ in range(200):
             store.record_equity(time.time(), "deriv", "A", 1.0, 1.0)
         store.prune(0.000001)
         out = store.vacuum()

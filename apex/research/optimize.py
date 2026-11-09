@@ -14,8 +14,6 @@ Two jobs:
 """
 from __future__ import annotations
 
-from ..symbols import DEFAULT_SYMBOLS_BY_BROKER
-
 import itertools
 import json
 import os
@@ -23,13 +21,13 @@ import random
 import statistics
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
-from ..backtest import BacktestRequest, BacktestResult, run_backtest
-from ..prop import PROFILES, get_profile
+from ..backtest import ANCHOR_TS, BacktestRequest, BacktestResult, run_backtest
+from ..prop import get_profile
 from ..risk import RiskConfig
 from ..strategy import StrategyProfile
-
+from ..symbols import DEFAULT_SYMBOLS_BY_BROKER
 
 DEFAULT_GRID: dict[str, list] = {
     "sl_atr": [0.8, 1.0, 1.3],
@@ -82,6 +80,7 @@ class SweepRequest:
     grid: dict[str, list] = field(default_factory=lambda: dict(DEFAULT_GRID))
     seeds: list[int] = field(default_factory=lambda: [1, 2, 3])
     trend_strength: float = 1.2
+    anchor_ts: Optional[float] = None      # tape anchor; None keeps the deterministic default
     max_combinations: int = 60
     out_dir: str = "runs/sweep"
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -89,7 +88,8 @@ class SweepRequest:
 
 def expand_grid(grid: dict[str, list], limit: int, seed: int = 7) -> list[dict]:
     keys = list(grid)
-    combos = [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
+    combos = [dict(zip(keys, vals, strict=True))
+              for vals in itertools.product(*(grid[k] for k in keys))]
     if len(combos) > limit:
         random.Random(seed).shuffle(combos)
         combos = combos[:limit]
@@ -110,6 +110,7 @@ def sweep(req: SweepRequest) -> dict:
                 prop_profile=req.prop_profile, record=False,
                 out_dir=os.path.join(req.out_dir, "tmp"), trend_strength=req.trend_strength,
                 risk=req.risk,
+                anchor_ts=req.anchor_ts if req.anchor_ts is not None else ANCHOR_TS,
             ))
             scores.append(score_result(r))
             results.append(r)
@@ -150,6 +151,7 @@ class PropSimRequest:
     strategy: str = "prop_conservative"
     initial_balance: float = 10_000.0
     trend_strength: float = 1.2
+    anchor_ts: Optional[float] = None
     out_dir: str = "runs/propsim"
 
 
@@ -161,6 +163,7 @@ def prop_pass_sim(req: PropSimRequest) -> dict:
             strategy=req.strategy, prop_profile=req.profile, record=False,
             out_dir=os.path.join(req.out_dir, "tmp"), initial_balance=req.initial_balance,
             trend_strength=req.trend_strength,
+            anchor_ts=req.anchor_ts if req.anchor_ts is not None else ANCHOR_TS,
         ))
         p = r.prop or {}
         outcomes.append({

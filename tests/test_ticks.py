@@ -4,8 +4,7 @@ import tempfile
 import unittest
 
 from apex.backtest import BacktestRequest, run_backtest
-from apex.data.feed import (LiveBarBuilder, TickRecorder, TickReplayFeed,
-                            synth_series, ticks_from_csv)
+from apex.data.feed import LiveBarBuilder, TickRecorder, TickReplayFeed, synth_series, ticks_from_csv
 from apex.models import Quote
 
 

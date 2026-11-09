@@ -6,15 +6,12 @@ files or logs.
 """
 from __future__ import annotations
 
-from .symbols import DEFAULT_SYMBOLS_BY_BROKER, parse_symbols
-
 import json
 import os
-from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .risk import RiskConfig
-
+from .symbols import DEFAULT_SYMBOLS_BY_BROKER
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "paper",

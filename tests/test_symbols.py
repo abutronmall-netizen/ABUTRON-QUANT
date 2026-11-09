@@ -1,8 +1,7 @@
 """The traded universe: R_10 and R_100 are first-class everywhere."""
 import unittest
 
-from apex.symbols import (DEFAULT_SYMBOLS, DEFAULT_SYMBOLS_BY_BROKER,
-                          VOLATILITY_INDICES, parse_symbols)
+from apex.symbols import DEFAULT_SYMBOLS, DEFAULT_SYMBOLS_BY_BROKER, VOLATILITY_INDICES, parse_symbols
 
 
 class TestSymbolUniverse(unittest.TestCase):
@@ -79,9 +78,27 @@ class TestResearchReproducibility(unittest.TestCase):
         self.assertEqual(first % tf_seconds("M5"), 0)
         self.assertEqual(len({_tape_start(req) for _ in range(3)}), 1)
 
+    def test_the_tape_ends_at_the_anchor(self):
+        import os
+        import tempfile
+
+        from apex.backtest import ANCHOR_TS, BacktestRequest, _series_for
+        from apex.timeutil import tf_seconds
+        step = tf_seconds("M5")
+        req = BacktestRequest(symbols_by_broker={"deriv": ["R_50"]}, bars=80,
+                              tf="M5", seed=3, record=False,
+                              out_dir=os.path.join(tempfile.mkdtemp(), "o"))
+        bars = _series_for("R_50", req)
+        self.assertEqual(len(bars), 80)
+        aligned = int(ANCHOR_TS) // step * step
+        self.assertEqual(bars[-1].ts + step, aligned)
+        self.assertEqual(bars[0].ts + 80 * step, aligned)
+
     def test_same_seed_same_metrics(self):
+        import os
+        import tempfile
+
         from apex.backtest import BacktestRequest, run_backtest
-        import tempfile, os
         tmp = tempfile.mkdtemp()
         outs = []
         for i in range(2):

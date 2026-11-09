@@ -15,16 +15,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import zlib
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .backtest import BASE_PRICES, VOL_BPS
-from .data.deriv import DerivAPI, DerivConfig, DerivFeed, SYMBOL_NAMES, fetch_candles_sync
+from .data.deriv import SYMBOL_NAMES, DerivAPI, DerivConfig, DerivFeed, fetch_candles_sync
 from .data.feed import LiveBarBuilder, SyntheticConfig, SyntheticFeed
-from .data.mt5 import MT5Config, MT5Connection, MT5Feed
+from .data.mt5 import MT5Config, MT5Feed
 from .engine import EngineConfig, TradingEngine
 from .execution.base import SymbolRegistry
 from .execution.deriv import DerivBroker
@@ -142,6 +142,12 @@ class LiveRunner:
             on_event=self._on_engine_event,
         )
         self._last_reconcile = 0.0
+        # The journal view is expensive (it walks every trade and equity row), and
+        # the dashboard asks for it every two seconds per open tab. Five seconds of
+        # staleness is invisible to an operator and keeps a long journal cheap.
+        self._journal_lock = threading.Lock()
+        self._journal_cache: Optional[tuple[dict, list]] = None
+        self._journal_ts = 0.0
         self.news = None
         self.ticks = None
         if cfg.news_calendar:
@@ -480,6 +486,28 @@ class LiveRunner:
                     pass
 
     # ------------------------------------------------------------------ #
+    JOURNAL_CACHE_S = 5.0
+
+    def _journal_view(self) -> tuple[dict, list]:
+        """Journal metrics + equity curve, refreshed at most every few seconds."""
+        with self._journal_lock:
+            cached = self._journal_cache
+            fresh = cached is not None and time.time() - self._journal_ts < self.JOURNAL_CACHE_S
+        if fresh:
+            return cached
+        try:
+            view = (self.store.metrics(), self.store.equity_curve(limit=720))
+        except Exception as exc:                 # a locked or corrupt journal must not kill the page
+            self.store.record_event("warn", f"journal view failed: {exc}")
+            view = ({"trades": 0, "win_rate": 0.0, "pnl": 0.0, "avg_r": 0.0,
+                     "profit_factor": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0,
+                     "sortino": 0.0, "by_strategy": {}, "by_symbol": {}, "by_broker": {},
+                     "by_exit": {}, "by_regime": {}, "equity_curve": [], "days": 0},
+                    [])
+        with self._journal_lock:
+            self._journal_cache, self._journal_ts = view, time.time()
+        return view
+
     def snapshot(self) -> dict:
         snap = self.engine.snapshot()
         snap["mode"] = self.cfg.mode
@@ -490,10 +518,13 @@ class LiveRunner:
         snap["signal_stats"] = dict(self.engine.rejections)
         snap["metrics"] = compute_metrics([t.as_dict() for t in self.engine.trades],
                                           initial_equity=self.cfg.initial_balance)
-        snap["journal_metrics"] = self.store.metrics()
-        snap["equity_history"] = self.store.equity_curve(limit=720)
+        journal_metrics, equity_history = self._journal_view()
+        snap["journal_metrics"] = journal_metrics
+        snap["equity_history"] = equity_history
         snap["feed_health"] = dict(self.feed_monitor.stats)
-        snap["journal_bytes"] = self.store.size_bytes()
+        parts = self.store.size_parts()
+        snap["journal_bytes"] = sum(parts.values())
+        snap["journal_parts"] = parts
         snap["events"] = self.store.recent_events(40)
         snap["signals"] = self.store.recent_signals(30)
         snap["symbol_names"] = {s: SYMBOL_NAMES.get(s, s) for s in self.engine.states}
@@ -553,7 +584,7 @@ class _PaperFeed:
     def __init__(self, cfg: LiveConfig):
         self.gens: dict[str, SyntheticFeed] = {}
         self.cfg = cfg
-        for broker, symbols in cfg.symbols_by_broker.items():
+        for symbols in cfg.symbols_by_broker.values():
             for s in symbols:
                 self.gens[s] = SyntheticFeed(s, SyntheticConfig(
                     base_price=BASE_PRICES.get(s, 1000.0),

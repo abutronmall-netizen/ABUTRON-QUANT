@@ -19,7 +19,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .. import __version__
 
@@ -35,6 +35,21 @@ PAGES = {
     "risk.html": "risk.html", "journal.html": "journal.html",
     "system.html": "system.html", "research.html": "research.html",
 }
+
+
+LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
+
+
+def control_authorized(token: str, supplied: str, client_ip: str) -> bool:
+    """Decide whether a control request may proceed.
+
+    A configured token must match. Without one, only a loopback client is
+    trusted — the dashboard binds to 127.0.0.1 by default, and an operator who
+    binds it to 0.0.0.0 without a token has created an open control panel.
+    """
+    if token:
+        return hmac.compare_digest(str(supplied or ""), str(token))
+    return str(client_ip or "") in LOOPBACK_ADDRESSES
 
 
 class DashboardState:
@@ -259,7 +274,27 @@ def make_handler(state: DashboardState):
         def _json(self, obj, code: int = 200) -> None:
             self._send(code, json.dumps(obj, default=str).encode(), "application/json")
 
+        def _error(self, code: int, exc: BaseException) -> None:
+            """Report a handler failure instead of dropping the connection.
+
+            An empty response looks like a dead server; this is the difference
+            between "the dashboard is down" and "the snapshot raised KeyError".
+            """
+            message = f"{type(exc).__name__}: {exc}"
+            try:
+                self._json({"error": message}, code)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def do_GET(self) -> None:              # noqa: N802
+            try:
+                return self._route_get()
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except Exception as exc:            # a 500 the operator can read beats no reply
+                self._error(500, exc)
+
+        def _route_get(self) -> None:
             path = urlparse(self.path).path
             page = path.strip("/").lower()
             if page in PAGES:
@@ -268,7 +303,13 @@ def make_handler(state: DashboardState):
                 return self._json(state.snapshot())
             if path == "/api/trades":
                 tr = state.runner.engine.trades if state.runner else []
-                return self._json([t.as_dict() for t in tr][-200:])
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = int((query.get("limit") or ["200"])[0])
+                except (TypeError, ValueError):
+                    limit = 200
+                limit = max(1, min(limit, 1000))
+                return self._json([t.as_dict() for t in tr][-limit:])
             if path == "/api/health":
                 return self._json({"ok": True, "uptime_s": round(time.time() - START, 1),
                                    "version": __version__})
@@ -287,14 +328,14 @@ def make_handler(state: DashboardState):
         def _authorized(self) -> bool:
             """Operator endpoints mutate real positions: they need a token.
 
-            With no token configured the endpoints are open, which is only
-            acceptable because the dashboard binds to localhost by default.
+            With no token configured the endpoints answer only a loopback client:
+            "open on localhost" is a single-operator convenience, not a licence to
+            let a network neighbour flatten the book.
             """
-            if not state.token:
-                return True
             supplied = (self.headers.get("X-Apex-Token")
                         or (self.headers.get("Authorization") or "").replace("Bearer ", ""))
-            return hmac.compare_digest(str(supplied or ""), str(state.token))
+            return control_authorized(state.token, supplied,
+                                      str(self.client_address[0] if self.client_address else ""))
 
         def _origin_ok(self) -> bool:
             origin = self.headers.get("Origin")
@@ -304,6 +345,14 @@ def make_handler(state: DashboardState):
             return host and host in origin
 
         def do_POST(self) -> None:             # noqa: N802
+            try:
+                return self._route_post()
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except Exception as exc:            # an operator must see why a control failed
+                self._error(500, exc)
+
+        def _route_post(self) -> None:
             path = urlparse(self.path).path
             if not self._origin_ok():
                 return self._json({"ok": False, "error": "cross-origin control rejected"}, 403)

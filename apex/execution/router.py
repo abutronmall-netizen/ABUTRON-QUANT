@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
-from ..models import AccountState, Ack, Order, Position, Quote, Side, SymbolSpec
+from ..models import AccountState, Ack, Order, Position, Quote, SymbolSpec
 from .base import ExecutionPort, SymbolRegistry
-from .sim import SimBroker
 
 
 @dataclass

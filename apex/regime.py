@@ -45,8 +45,7 @@ def detect(primary: IndicatorSet, higher: dict[str, IndicatorSet]) -> Regime:
 
     # A trend label is downgraded when higher timeframes are clearly fighting it.
     if label in (RegimeLabel.TREND_UP, RegimeLabel.TREND_DOWN) and htf_total:
-        want = 1 if label is RegimeLabel.TREND_UP else -1
-        if htf_agree == 0:
+        if htf_agree == 0:                 # every higher timeframe that is ready disagrees
             label = RegimeLabel.RANGE
 
     return Regime(

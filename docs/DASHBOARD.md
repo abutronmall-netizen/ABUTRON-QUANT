@@ -72,8 +72,13 @@ token / control buttons.
 | POST | `/api/control/rearm` | token | release the kill switch |
 
 The token comes from `--token` or `APEX_DASHBOARD_TOKEN` and is sent as `X-Apex-Token: …` (a bearer
-token is also accepted). Cross-origin POSTs are refused. With no token configured, control is open
-only to a same-origin request from a loopback client — the intended single-operator setup.
+token is also accepted). Cross-origin POSTs are refused.
+
+With **no** token configured, `control_authorized()` allows a loopback client only
+(`127.0.0.1`/`::1`): binding to `0.0.0.0` without a token leaves the panel observable but makes
+its buttons refuse to act, and `apex serve` says so at startup. `GET /api/trades` honours
+`?limit=` (1…1000). A handler that raises answers `500` with `{"error": …}` instead of dropping the
+connection, so a broken snapshot reads as an error and not as a dead server.
 
 ---
 

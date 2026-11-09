@@ -1,8 +1,7 @@
-import math
 import unittest
 
 from apex.data.feed import BarAggregator, SyntheticConfig, SyntheticFeed
-from apex.indicators import ATR, EMA, RSI, ADX, IndicatorSet, linreg_slope
+from apex.indicators import ADX, ATR, EMA, RSI, IndicatorSet, linreg_slope
 from apex.models import Bar
 
 

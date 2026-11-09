@@ -21,13 +21,12 @@ import time
 from typing import Optional
 
 from . import __version__
-from .backtest import ANCHOR_TS, BacktestRequest, render_markdown, run_backtest
+from .backtest import ANCHOR_TS, BacktestRequest, run_backtest
 from .config import broker_credentials, load_config, risk_from
 from .live import LiveConfig, LiveRunner
-from .prop import PROFILES, get_profile, plan_for
+from .prop import PROFILES, plan_for
 from .risk import RiskConfig
 from .store import Store
-from .strategy import StrategyProfile
 from .symbols import DEFAULT_SYMBOLS, parse_symbols
 from .timeutil import tf_seconds
 
@@ -47,6 +46,19 @@ def _split(s: str) -> list[str]:
     return parse_symbols(s)
 
 
+def _broker_key(args) -> str:
+    """`--broker` wins; otherwise the mode decides (`--mode mt5` means MT5).
+
+    They used to be independent, so `serve --mode mt5` quietly built an engine
+    around the *Deriv* symbol book while the route carried the MT5 one: a desk
+    that looked connected and could never trade.
+    """
+    explicit = getattr(args, "broker", None)
+    if explicit:
+        return explicit
+    return "mt5" if getattr(args, "mode", None) == "mt5" else "deriv"
+
+
 def _symbol_map(broker: str, symbols: list[str]) -> dict[str, list[str]]:
     if broker == "both":
         return {"deriv": [s for s in symbols if s.startswith(("R_", "1HZ", "BOOM", "CRASH", "JD"))],
@@ -62,13 +74,22 @@ def cmd_serve(args) -> int:
 
     cfg = load_config(args.config)
     creds = broker_credentials(cfg)
-    symbols = _split(args.symbols) if args.symbols else \
-        cfg["symbols_by_broker"].get(args.broker, DEFAULT_SYMBOLS)
-
     mode = args.mode or ("paper" if args.demo else cfg["mode"])
+    broker_key = _broker_key(args)
+    symbols = _split(args.symbols) if args.symbols else \
+        cfg["symbols_by_broker"].get(broker_key, DEFAULT_SYMBOLS)
+
+    if mode == "mt5":
+        from .data.mt5 import mt5_installed
+        if not mt5_installed():
+            print("[!] --mode mt5 needs a Windows host, the MetaTrader5 package and a running "
+                  "terminal; neither is available here")
+            print("    (pip install MetaTrader5 on Windows, or run the MT5 bridge on a Windows "
+                  "host). Use --demo/--mode paper here, or --mode deriv for Deriv synthetics.")
+            return 2
     live = LiveConfig(
         mode=mode,
-        symbols_by_broker=_symbol_map(args.broker, symbols),
+        symbols_by_broker=_symbol_map(broker_key, symbols),
         tf=args.tf or cfg["tf"],
         strategy=args.strategy or cfg["strategy"],
         prop_profile=(cfg.get("prop_profile") if _prop_arg(args.prop) == "__config__"
@@ -124,8 +145,15 @@ def cmd_serve(args) -> int:
     thread.start()
     print(f"[apex] mode={mode} symbols={live.symbols_by_broker} strategy={live.strategy} "
           f"prop={live.prop_profile or 'none'}")
-    print(f"[apex] dashboard on http://{args.host}:{args.port}"
-          + ("  (control endpoints require the operator token)" if token else ""))
+    exposure = "" if args.host in ("127.0.0.1", "localhost", "::1") else args.host
+    if token:
+        exposure_note = "  (control endpoints require the operator token)"
+    elif exposure:
+        exposure_note = (f"  !! control endpoints are UNAUTHENTICATED while bound to {exposure}"
+                         " — set --token before exposing this host")
+    else:
+        exposure_note = "  (controls open to this machine only; set --token to require one)"
+    print(f"[apex] dashboard on http://{args.host}:{args.port}" + exposure_note)
     try:
         while not stop.is_set():
             time.sleep(0.5)
@@ -137,7 +165,7 @@ def cmd_serve(args) -> int:
 
 def cmd_backtest(args) -> int:
     symbols = _split(args.symbols)
-    broker = args.broker
+    broker = _broker_key(args)
     out = args.out or f"runs/bt_{int(time.time())}"
     risk = RiskConfig()
     if args.risk_pct:
@@ -179,11 +207,11 @@ def cmd_sweep(args) -> int:
     from .research.optimize import DEFAULT_GRID, SweepRequest, sweep
     symbols = _split(args.symbols)
     req = SweepRequest(
-        symbols_by_broker=_symbol_map(args.broker, symbols),
+        symbols_by_broker=_symbol_map(_broker_key(args), symbols),
         bars=args.bars, strategy=args.strategy,
         prop_profile=_prop_arg(args.prop) if args.prop is not None else None,
         seeds=list(range(1, args.seeds + 1)), trend_strength=args.trend_strength,
-        max_combinations=args.combos, out_dir=args.out,
+        max_combinations=args.combos, out_dir=args.out, anchor_ts=args.anchor_ts,
     )
     if args.grid:
         req.grid = json.loads(args.grid)
@@ -202,10 +230,11 @@ def cmd_sweep(args) -> int:
 def cmd_propsim(args) -> int:
     from .research.optimize import PropSimRequest, prop_pass_sim
     symbols = _split(args.symbols)
-    req = PropSimRequest(profile=args.profile, symbols_by_broker=_symbol_map(args.broker, symbols),
+    req = PropSimRequest(profile=args.profile,
+                         symbols_by_broker=_symbol_map(_broker_key(args), symbols),
                          bars=args.bars, seeds=args.seeds, strategy=args.strategy,
                          initial_balance=args.balance, trend_strength=args.trend_strength,
-                         out_dir=args.out)
+                         anchor_ts=args.anchor_ts, out_dir=args.out)
     print(f"[propsim] {req.profile} over {req.seeds} seeds, {req.bars} bars each")
     out = prop_pass_sim(req)
     print(f"  pass {out['pass_rate_pct']}%  breach {out['breach_rate_pct']}%  "
@@ -217,7 +246,7 @@ def cmd_propsim(args) -> int:
 
 def cmd_profiles(args) -> int:
     print(f"{'profile':<24}{'target':>8}{'daily':>8}{'total':>8}{'minDays':>9}{'consist':>9}{'risk%':>8}")
-    for name, fn in PROFILES.items():
+    for _name, fn in PROFILES.items():
         p = fn()
         plan = plan_for(p, 10_000)
         print(f"{p.name:<24}{p.profit_target_pct:>7.1f}%{p.max_daily_loss_pct:>7.1f}%"
@@ -243,8 +272,8 @@ def cmd_doctor(args) -> int:
         rows.append(("deriv token", "MISSING", "set DERIV_TOKEN for live Deriv trading"))
     rows.append(("deriv app id", "OK", creds["deriv_app_id"]))
     try:
-        from .data.ws import WebSocketClient                    # noqa: F401
-        from .data.deriv import DerivAPI                        # noqa: F401
+        from .data.deriv import DerivAPI  # noqa: F401
+        from .data.ws import WebSocketClient  # noqa: F401
         rows.append(("deriv adapter", "OK", "websocket client + API loaded"))
     except Exception as exc:
         rows.append(("deriv adapter", "FAIL", str(exc)))
@@ -327,7 +356,7 @@ def cmd_fetch(args) -> int:
     creds = broker_credentials(cfg)
     out = args.out or f"data/{args.symbol}_{args.tf}.csv"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    if args.broker == "mt5":
+    if _broker_key(args) == "mt5":
         from .data.mt5 import MT5Config, MT5Connection
         conn = MT5Connection(MT5Config(login=creds["mt5_login"], password=creds["mt5_password"],
                                        server=creds["mt5_server"], path=creds["mt5_path"]))
@@ -339,8 +368,16 @@ def cmd_fetch(args) -> int:
         bars = conn.rates(args.symbol, args.tf, args.bars)
         print(f"[fetch] mt5 offset {conn.offset_hours}h (server -> UTC)")
     else:
-        bars = fetch_candles_sync(args.symbol, tf_seconds(args.tf), args.bars,
-                                  app_id=creds["deriv_app_id"], token=creds["deriv_token"])
+        try:
+            bars = fetch_candles_sync(args.symbol, tf_seconds(args.tf), args.bars,
+                                      app_id=creds["deriv_app_id"], token=creds["deriv_token"])
+        except Exception as exc:                # network, TLS, refused handshake, bad token
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            print(f"[fetch] Deriv unavailable: {detail}")
+            return 2
+    if not bars:
+        print(f"[fetch] no candles returned for {args.symbol} {args.tf}")
+        return 2
     bars_to_csv(bars, out)
     span = (bars[-1].ts - bars[0].ts) / 86400 if bars else 0
     print(f"[fetch] {len(bars)} bars {args.symbol} {args.tf} ({span:.1f} days) -> {out}")
@@ -420,18 +457,21 @@ def cmd_prune(args) -> int:
         print(f"no journal at {db}")
         return 1
     store = Store(db)
+    before = store.size_bytes()
     try:
-        before = store.size_bytes()
         out = store.prune(args.days, keep_trades=not args.drop_trades)
         vac = store.vacuum() if not args.no_vacuum else {"reclaimed": 0}
-        after = store.size_bytes()
-        print(f"{db}: {before/1e6:.2f} MB -> {after/1e6:.2f} MB "
-              f"(reclaimed {max(0, before - after)/1e6:.2f} MB)")
-        print(f"  pruned {out}")
-        if not args.no_vacuum and not vac.get("ok", True):
-            print(f"  vacuum failed: {vac.get('error')}")
     finally:
         store.close()
+    # measure after the close: a clean shutdown checkpoints the WAL, and that is
+    # the number an operator comparing against `df` will see
+    after = sum(os.path.getsize(db + suffix) for suffix in ("", "-wal", "-shm")
+                if os.path.exists(db + suffix))
+    print(f"{db}: {before/1e6:.2f} MB -> {after/1e6:.2f} MB "
+          f"(reclaimed {max(0, before - after)/1e6:.2f} MB)")
+    print(f"  pruned {out}")
+    if not args.no_vacuum and not vac.get("ok", True):
+        print(f"  vacuum failed: {vac.get('error')}")
     return 0
 
 
@@ -488,14 +528,16 @@ def build_parser() -> argparse.ArgumentParser:
     def common(sp):
         sp.add_argument("--config", default=None, help="JSON config path")
         sp.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
-        sp.add_argument("--broker", default="deriv", choices=["deriv", "mt5", "sim", "both"])
+        sp.add_argument("--broker", default=None, choices=["deriv", "mt5", "sim", "both"],
+                        help="symbol book + venue (default: deriv, or mt5 when --mode mt5)")
         sp.add_argument("--tf", default="M5")
         sp.add_argument("--strategy", default="scalp_balanced",
                         choices=["scalp_fast", "scalp_balanced", "prop_conservative"])
         sp.add_argument("--prop", default=None, help="prop profile name or JSON path")
         sp.add_argument("--balance", type=float, default=10_000.0)
         sp.add_argument("--anchor-ts", type=float, default=None,
-                        help="start of the synthetic tape (default: a fixed anchor, so seeded runs reproduce)")
+                        help="fixed epoch the synthetic tape ends at (default: built-in anchor, so a "
+                             "seeded run reproduces instead of moving with the clock)")
         sp.add_argument("--trend-strength", type=float, default=1.2,
                         help="synthetic trend persistence (validation only)")
         sp.add_argument("--out", default=None)
@@ -632,7 +674,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except FileNotFoundError as exc:
+        print(f"[!] {exc}")
+        return 2
+    except PermissionError as exc:
+        print(f"[!] permission denied: {exc}")
+        return 2
+    except KeyboardInterrupt:
+        print("\n[!] interrupted")
+        return 130
 
 
 if __name__ == "__main__":

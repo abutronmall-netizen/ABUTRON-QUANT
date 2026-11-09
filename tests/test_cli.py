@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 
-from apex.cli import _prop_arg, _tf_seconds, build_parser, main
+from apex.cli import _broker_key, _prop_arg, _tf_seconds, build_parser, main
 
 
 def run(argv):
@@ -84,6 +84,34 @@ class TestCommands(unittest.TestCase):
     def test_serve_accepts_the_ai_flag(self):
         args = build_parser().parse_args(["serve", "--demo", "--ai", "veto"])
         self.assertEqual(args.ai, "veto")
+
+    def test_a_missing_config_is_a_message_and_exit_2(self):
+        code, out = run(["serve", "--config", "/tmp/definitely-not-here.json"])
+        self.assertEqual(code, 2)
+        self.assertIn("config not found", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_mt5_mode_refuses_on_a_host_without_the_package(self):
+        try:
+            import MetaTrader5  # noqa: F401
+        except ImportError:
+            pass
+        else:                                   # pragma: no cover - Windows CI only
+            self.skipTest("MetaTrader5 is installed here")
+        code, out = run(["serve", "--mode", "mt5", "--port", "0"])
+        self.assertEqual(code, 2)
+        self.assertIn("--mode mt5", out)
+        self.assertIn("--mode paper", out)
+
+    def test_the_symbol_book_follows_the_mode(self):
+        args = build_parser().parse_args(["serve", "--demo"])
+        self.assertEqual(_broker_key(args), "deriv")
+        args = build_parser().parse_args(["serve", "--mode", "mt5"])
+        self.assertEqual(_broker_key(args), "mt5")
+        args = build_parser().parse_args(["serve", "--mode", "mt5", "--broker", "deriv"])
+        self.assertEqual(_broker_key(args), "deriv")
+        args = build_parser().parse_args(["backtest"])
+        self.assertEqual(_broker_key(args), "deriv")
 
     def test_fetch_without_mt5_exits_with_a_clear_code(self):
         code, out = run(["fetch", "--broker", "mt5", "--symbol", "EURUSD", "--bars", "10"])

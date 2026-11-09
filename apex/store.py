@@ -13,9 +13,9 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
-from .models import Ack, Candidate, Order, Position, TradeRecord
+from .models import Ack, Candidate, Order, TradeRecord
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (
@@ -211,11 +211,24 @@ class Store:
     # ------------------------------------------------------------------ #
     # maintenance: a journal that grows forever is a journal nobody backs up
     # ------------------------------------------------------------------ #
+    def size_parts(self) -> dict[str, int]:
+        """Main file, WAL and shared memory, in bytes."""
+        parts = {}
+        for suffix, label in (("", "main"), ("-wal", "wal"), ("-shm", "shm")):
+            try:
+                parts[label] = os.path.getsize(self.path + suffix)
+            except OSError:
+                parts[label] = 0
+        return parts
+
     def size_bytes(self) -> int:
-        try:
-            return os.path.getsize(self.path)
-        except OSError:
-            return 0
+        """On-disk footprint **including the WAL**.
+
+        In WAL mode the main file alone understates a busy journal by megabytes:
+        the dashboard used to report 0.95 MB for a 5 MB journal. An operator
+        sizing a disk from that number is being told a comfortable lie.
+        """
+        return sum(self.size_parts().values())
 
     def prune(self, retention_days: float, now: Optional[float] = None,
               keep_trades: bool = True) -> dict:
@@ -239,6 +252,14 @@ class Store:
                 counts["trades"] = cur.rowcount or 0
         counts["retention_days"] = retention_days
         counts["cutoff"] = cutoff
+        # Truncate the WAL: without this the deleted rows stay on disk in the
+        # write-ahead log until the next checkpoint, so `prune --no-vacuum` would
+        # claim to reclaim space it has not reclaimed.
+        try:
+            with self._lock:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:
+            counts["checkpoint_error"] = f"{type(exc).__name__}: {exc}"
         return counts
 
     def vacuum(self) -> dict:
@@ -286,7 +307,7 @@ def compute_metrics(trades: list[dict], equity: Optional[list[dict]] = None,
         for row in equity:
             by_day[int(row["ts"] // 86400)] = row["equity"]
         days = sorted(by_day)
-        for a, b in zip(days, days[1:]):
+        for a, b in zip(days, days[1:], strict=False):
             prev = by_day[a]
             if prev:
                 returns.append((by_day[b] - prev) / prev)

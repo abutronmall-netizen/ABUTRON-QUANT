@@ -3,6 +3,83 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.4.1 — the numbers an operator reads, and the paths that produced them
+
+A pass over everything the 2.4.0 portals put in front of a person, plus the
+command paths behind them. No strategy behaviour changed; every fix here is
+either a lie removed from the screen or a dead end removed from the shell.
+
+**The journal size was understated.** `Store.size_bytes()` looked at the main
+sqlite file only. In WAL mode that is a fraction of the footprint: the dashboard
+reported 0.95 MB for a 5 MB journal, and `apex prune --no-vacuum` printed
+`1.28 MB -> 2.47 MB` — it appeared to *grow* the file while deleting 4 000 rows,
+because the deletes sat in the write-ahead log. Now:
+- `size_bytes()` sums main + `-wal` + `-shm`; `size_parts()` exposes the split and
+  the Journal portal shows it.
+- `prune()` ends with `PRAGMA wal_checkpoint(TRUNCATE)`, so deleted rows actually
+  leave the disk; the CLI measures the file after the connection closes.
+
+**A crashing handler looked like a dead server.** Any exception in `do_GET`
+dropped the connection with no response. It now answers `500` with
+`{"error": "TypeError: …"}`; `do_POST` is wrapped the same way, so a failed
+flatten tells you why.
+
+**`/api/trades` ignored `?limit=`.** The blotter asked for 500 and got whatever
+the server felt like (200). Now the parameter is honoured and clamped to
+1…1000.
+
+**Control without a token was open to the network.** With no `--token` the kill
+and flatten endpoints answered anyone who could reach the port; the code relied
+on the operator binding to localhost. `control_authorized()` now requires a token
+*or* a loopback client, and `apex serve` prints an explicit warning when it binds
+to a public interface without one.
+
+**The snapshot iterated live dictionaries.** `engine.snapshot()` walked
+`positions`/`states`/`pending` directly while the trading loop mutated them — the
+classic "dictionary changed size during iteration" waiting for a busy session.
+It copies the books first.
+
+**The dashboard re-wrote the journal on every tick.** `live.snapshot()` called
+`store.metrics()` and `equity_curve()` on every poll (2 s per open tab, walking
+every trade and equity row). The journal view is now cached for 5 s and survives
+a locked database.
+
+**Command-line dead ends.**
+- `--broker` now follows `--mode`: `serve --mode mt5` used to build an engine
+  around the *Deriv* symbol book while the route carried the MT5 one — a desk
+  that looked connected and could never trade.
+- `--mode mt5` on a host without the MetaTrader5 package exits 2 with the fix in
+  the message instead of starting a silent, data-less desk.
+- a missing `--config` prints `[!] config not found: …` and exits 2 (it was an
+  uncaught traceback).
+- `apex fetch` reports `Deriv unavailable: …` and exits 2 instead of dumping an
+  SSL traceback; an empty candle response is an error, not a 0-bar CSV.
+- `--anchor-ts` is threaded into `sweep` and `propsim`, which previously ignored
+  it and always used the built-in anchor.
+
+**Portals that stay live.** The trades blotter was loaded once and never
+refreshed (10 s now), the verify checklist ditto (30 s), the symbol filter
+survived neither a repaint (it does now), a slow snapshot could stack requests
+(guarded), the nav marks the current page with `aria-current`, and the Journal
+page shows main-file versus WAL instead of one misleading number.
+
+**The wheel was shipping an unstyled dashboard.** `package-data` listed
+`static/*`, which does not match `static/vendor/bootstrap/*`: a `pip install`
+would have produced portals with no CSS and no navbar behaviour. The patterns are
+explicit now and the CI package job asserts the five required assets are inside
+the built wheel.
+
+**Hygiene.** `ruff check apex tests` now passes, and CI runs it: the lint contract
+is `F,E9,B,I` (undefined names, syntax, bugbear, import order). The previous
+`pyproject.toml` also selected `E,W,UP`, which the code never satisfied, so the
+config read like a guarantee it was not; `[tool.ruff.lint]` now carries a comment
+explaining why the `UP` rewrite (`Optional[X]` → `X | None` in 200+ signatures) is
+a separate change. Fixes in this pass: an unused `Ack` import that left a type
+annotation as a string, dead locals in the agent/regime adapters that looked like
+live logic, `zip(strict=)` where lengths must match, and the unused imports.
+
+Tests: 290 (was 276).
+
 ## 2.4.0 — the portals, the whole volatility curve, and a tape that repeats
 
 Three things a desk needs before it can be believed: one place to look, one list of instruments,

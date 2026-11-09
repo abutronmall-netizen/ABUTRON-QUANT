@@ -7,8 +7,6 @@ import unittest
 
 from apex.backtest import BacktestRequest, run_backtest
 from apex.data.deriv import bars_to_csv
-from apex.data.feed import synth_series
-from apex.prop import get_profile
 from apex.risk import RiskConfig
 
 

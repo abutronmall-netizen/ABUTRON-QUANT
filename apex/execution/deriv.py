@@ -19,11 +19,10 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from ..data.deriv import DerivAPI, DerivConfig, DerivError
-from ..models import (AccountState, Ack, Order, Position, Quote, Side, SymbolSpec,
-                      new_client_id)
+from ..models import AccountState, Ack, Order, Position, Quote, Side, SymbolSpec, new_client_id
 from .base import SymbolRegistry
 
 
@@ -158,7 +157,6 @@ class DerivBroker:
 
     def submit(self, order: Order) -> Ack:
         ts = time.time()
-        spec = self.spec(order.symbol)
         entry = order.price or 0.0
         if entry <= 0:
             return Ack(ok=False, client_id=order.client_id, ts=ts,

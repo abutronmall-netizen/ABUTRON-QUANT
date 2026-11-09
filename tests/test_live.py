@@ -179,7 +179,6 @@ class TestStopPropagation(unittest.TestCase):
         port = FakePort(partial_ratio=0.5)
         engine, _, _ = build(port)
         engine.boot_sync("adopt")
-        st = engine.states["R_25"]
         cand = Candidate(symbol="R_25", side=Side.BUY, conviction=0.7, price=2400.0,
                          sl=2390.0, tp=2420.0, ttl_s=60, strategy="scalp_balanced",
                          regime="trend_up")
@@ -238,6 +237,113 @@ class TestDurableState(unittest.TestCase):
         before = int((base - hour * 3600) // 86400)
         after = int((base + 2 * 3600 - hour * 3600) // 86400)
         self.assertEqual(before, after)
+
+
+class TestConcurrentSnapshot(unittest.TestCase):
+    """The dashboard polls from another thread while the engine trades.
+
+    A stress test, not a proof: it cannot force the interleaving that used to
+    raise "dictionary changed size during iteration", but it exercises the path
+    hundreds of times against a mutating book and would surface a regression that
+    put live views back into the snapshot.
+    """
+
+    def test_snapshot_survives_a_churning_book(self):
+        from apex.models import Position, Side
+
+        engine, _, _ = build(FakePort())
+        stop = threading.Event()
+        errors: list[str] = []
+
+        def churn():
+            i = 0
+            while not stop.is_set():
+                i += 1
+                pid = f"p{i}"
+                engine.positions[pid] = Position(
+                    id=pid, symbol="R_25", side=Side.BUY, lots=0.1, entry=100.0,
+                    sl=99.0, tp=102.0, opened_ts=time.time(), broker="deriv",
+                    account="ACC-1", strategy="test", contract_id=pid,
+                    meta={"risk_money": 1.0})
+                engine.positions.pop(pid, None)
+                engine.states[f"s{i}"] = type("St", (), {
+                    "symbol": "R_25", "broker": "deriv", "last_status": "ok", "bar_count": 1,
+                    "last_quote": None, "entry": None, "context": {},
+                    "last_candidate": None})()
+                engine.states.pop(f"s{i}", None)
+
+        thread = threading.Thread(target=churn, daemon=True)
+        thread.start()
+        try:
+            for _ in range(400):
+                try:
+                    snap = engine.snapshot()
+                except RuntimeError as exc:      # pragma: no cover - the bug being fixed
+                    errors.append(str(exc))
+                    break
+                self.assertIn("positions", snap)
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+        self.assertEqual(errors, [])
+
+
+class TestJournalViewCache(unittest.TestCase):
+    def test_journal_view_is_computed_once_per_window(self):
+        import threading
+
+        from apex.live import LiveRunner
+        runner = object.__new__(LiveRunner)
+        runner._journal_lock = threading.Lock()
+        runner._journal_cache = None
+        runner._journal_ts = 0.0
+        calls = []
+
+        class FakeStore:
+            def metrics(self):
+                calls.append("metrics")
+                return {"trades": 1, "equity_curve": []}
+
+            def equity_curve(self, limit=720):
+                calls.append("curve")
+                return [{"ts": 1.0, "equity": 10_000.0}]
+
+            def record_event(self, *a):
+                pass
+
+        runner.store = FakeStore()
+        first = runner._journal_view()
+        second = runner._journal_view()
+        self.assertIs(first, second)
+        self.assertEqual(calls, ["metrics", "curve"])
+        # an expired window recomputes
+        runner._journal_ts = 0.0
+        runner._journal_view()
+        self.assertEqual(calls, ["metrics", "curve", "metrics", "curve"])
+
+    def test_journal_view_survives_a_broken_store(self):
+        import threading
+
+        from apex.live import LiveRunner
+        runner = object.__new__(LiveRunner)
+        runner._journal_lock = threading.Lock()
+        runner._journal_cache = None
+        runner._journal_ts = 0.0
+
+        class Broken:
+            def metrics(self):
+                raise RuntimeError("database is locked")
+
+            def equity_curve(self, limit=720):
+                raise RuntimeError("database is locked")
+
+            def record_event(self, *a):
+                pass
+
+        runner.store = Broken()
+        metrics, curve = runner._journal_view()
+        self.assertEqual(metrics["trades"], 0)
+        self.assertEqual(curve, [])
 
 
 class TestLiveRunnerPersistence(unittest.TestCase):

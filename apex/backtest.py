@@ -7,29 +7,28 @@ would actually trade, including spread, slippage and commission.
 """
 from __future__ import annotations
 
-from .timeutil import tf_seconds
-
 import csv
 import json
-import zlib
 import os
 import time
-from dataclasses import dataclass, field, asdict
+import zlib
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from .data.deriv import bars_from_csv
-from .data.feed import SyntheticConfig, SyntheticFeed, TickReplayFeed, synth_series, ticks_from_csv
+from .data.feed import SyntheticConfig, SyntheticFeed, TickReplayFeed, ticks_from_csv
 from .engine import EngineConfig, TradingEngine
 from .execution.base import SymbolRegistry
 from .execution.router import BrokerRouter, Route
 from .execution.sim import SimBroker, SimConfig
-from .models import Bar, Quote, Side
+from .models import Bar, Quote
 from .portfolio import ReflectionMemory
 from .prop import PropGuard, PropProfile, get_profile, plan_for
 from .risk import RiskConfig
-from .symbols import DEFAULT_SYMBOLS_BY_BROKER
 from .store import Store, compute_metrics
 from .strategy import StrategyProfile
+from .symbols import DEFAULT_SYMBOLS_BY_BROKER
+from .timeutil import tf_seconds
 
 #: The synthetic tape must not move when the clock does: a published reference
 #: run is only useful if `--seed 7` reproduces it tomorrow. 2023-11-14 22:13 UTC,
@@ -83,8 +82,8 @@ class BacktestRequest:
     out_dir: str = "runs/latest"
     use_prop_plan: bool = True
     start_ts: Optional[float] = None
-    #: when `start_ts` is unset the synthetic tape starts here instead of "now",
-    #: so a seeded run is reproducible across days, machines and CI
+    #: when `start_ts` is unset the synthetic tape is generated to *end* here
+    #: instead of at "now", so a seeded run reproduces across days and machines
     anchor_ts: float = ANCHOR_TS
     max_bars_hold: int = 12
     # synthetic-market structure knobs (validation only; real data comes from feeds)
@@ -117,7 +116,11 @@ class BacktestResult:
 
 
 def _tape_start(req: BacktestRequest) -> float:
-    """First bar of the synthetic tape: explicit, else the fixed anchor."""
+    """First bar of the synthetic tape.
+
+    An explicit `start_ts` wins; otherwise the tape ends at `anchor_ts` and runs
+    backwards `bars` steps, which is what keeps a fixed seed on a fixed tape.
+    """
     step = tf_seconds(req.tf)
     base = float(req.start_ts if req.start_ts is not None else req.anchor_ts)
     return (int(base) // step) * step - req.bars * step
@@ -225,7 +228,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
     else:
         merged = sorted(((b.ts, sym, b) for sym, bars in all_bars.items() for b in bars),
                         key=lambda t: (t[0], t[1]))
-    for ts, sym, bar in merged:
+    for _ts, sym, bar in merged:
         sim = brokers[engine.states[sym].broker]
         spec = registry.spec(engine.states[sym].broker, sym)
         # Cost model: use the instrument's quoted spread where the registry knows

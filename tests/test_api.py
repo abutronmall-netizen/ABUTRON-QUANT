@@ -8,6 +8,80 @@ import urllib.request
 from apex.api.server import DashboardState, serve
 
 
+class _StubTrade:
+    def __init__(self, i: int):
+        self.i = i
+
+    def as_dict(self):
+        return {"trade_id": f"t{self.i}", "pnl": float(self.i)}
+
+
+class _StubRunner:
+    class _Engine:
+        def __init__(self):
+            self.trades = [_StubTrade(i) for i in range(40)]
+
+    def __init__(self):
+        self.engine = self._Engine()
+
+
+class TestControlAuthorization(unittest.TestCase):
+    """A token, or a loopback client — never an open panel on a public interface."""
+
+    def test_no_token_means_loopback_only(self):
+        from apex.api.server import control_authorized
+        self.assertTrue(control_authorized("", "", "127.0.0.1"))
+        self.assertTrue(control_authorized("", "", "::1"))
+        self.assertFalse(control_authorized("", "", "10.1.2.3"))
+        self.assertFalse(control_authorized("", "", ""))
+
+    def test_a_token_is_required_from_anywhere_once_configured(self):
+        from apex.api.server import control_authorized
+        self.assertTrue(control_authorized("s3cret", "s3cret", "10.1.2.3"))
+        self.assertTrue(control_authorized("s3cret", "s3cret", "127.0.0.1"))
+        self.assertFalse(control_authorized("s3cret", "", "127.0.0.1"))
+        self.assertFalse(control_authorized("s3cret", "guess", "10.1.2.3"))
+
+
+class TestDashboardTrades(unittest.TestCase):
+    def setUp(self):
+        self.state = DashboardState(runner=_StubRunner(),
+                                    snapshot_fn=lambda: {"mode": "paper"})
+        self.httpd = serve(self.state, host="127.0.0.1", port=0)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _get(self, path):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
+            return json.loads(r.read())
+
+    def test_limit_is_honoured_newest_last(self):
+        self.assertEqual(len(self._get("/api/trades")), 40)
+        self.assertEqual(len(self._get("/api/trades?limit=3")), 3)
+        self.assertEqual(self._get("/api/trades?limit=3")[-1]["trade_id"], "t39")
+
+    def test_a_handler_crash_answers_500_instead_of_dropping_the_connection(self):
+        class Boom:
+            def as_dict(self):
+                raise RuntimeError("boom")
+
+        self.state.runner.engine.trades = [Boom()]
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/trades")
+        self.assertEqual(ctx.exception.code, 500)
+        self.assertIn("boom", json.loads(ctx.exception.read())["error"])
+
+    def test_limit_is_clamped_and_junk_is_ignored(self):
+        self.assertEqual(len(self._get("/api/trades?limit=0")), 1)
+        self.assertEqual(len(self._get("/api/trades?limit=-5")), 1)
+        self.assertEqual(len(self._get("/api/trades?limit=abc")), 40)
+        self.assertEqual(len(self._get("/api/trades?limit=100000")), 40)
+
+
 class TestDashboardAPI(unittest.TestCase):
     token = "s3cret"
 
@@ -74,8 +148,9 @@ class TestDashboardAPI(unittest.TestCase):
 
     def test_portals_have_no_network_dependencies(self):
         """The preview iframe has no internet: no CDN, font or telemetry URLs."""
-        from apex.api.server import PAGES, STATIC_DIR
         import os
+
+        from apex.api.server import PAGES, STATIC_DIR
         html_files = sorted({name for name in PAGES.values() if name.endswith(".html")})
         for name in html_files:
             with open(os.path.join(STATIC_DIR, name), encoding="utf-8") as fh:

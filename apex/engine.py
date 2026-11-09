@@ -19,12 +19,23 @@ from typing import Callable, Optional
 from .agents import MarketContext
 from .data.feed import BarAggregator
 from .execution.pending import PendingBook, PendingOrder
-from .execution.router import BrokerRouter, Route
+from .execution.router import BrokerRouter
 from .indicators import IndicatorSet
-from .models import (AccountState, Bar, Candidate, Decision, ExitReason, Order, Position,
-                     Quote, Side, TradeRecord, new_client_id)
+from .models import (
+    Ack,
+    Bar,
+    Candidate,
+    Decision,
+    ExitReason,
+    Order,
+    Position,
+    Quote,
+    Side,
+    TradeRecord,
+    new_client_id,
+)
 from .portfolio import PortfolioManager, ReflectionMemory
-from .prop import PropGuard, PropProfile
+from .prop import PropGuard
 from .regime import detect
 from .risk import RiskConfig, RiskEngine, session_day
 from .store import Store
@@ -450,7 +461,6 @@ class TradingEngine:
         return out
 
     def _materialise_pending(self, po: PendingOrder, status: dict, now: float) -> None:
-        spec = self.router.spec(po.symbol, po.broker)
         lots = float(status.get("filled_lots") or po.lots)
         price = float(status.get("filled_price") or 0.0) or po.entry_hint or self._mark_price_guess(po.symbol)
         risk = po.risk_money * (lots / po.lots) if po.lots else po.risk_money
@@ -854,7 +864,14 @@ class TradingEngine:
                 px = q.bid if p.side is Side.BUY else q.ask
                 unrealised += p.unrealised(px, spec.value_per_point_per_lot)
 
-        heat = self.risk_engine.open_risk_money(list(self.positions.values()))
+        # The dashboard reads this from another thread while the engine trades.
+        # Take copies first: iterating a dict that another thread is mutating
+        # raises "dictionary changed size during iteration" and the operator gets
+        # a blank page at exactly the wrong moment.
+        positions = list(self.positions.values())
+        states = list(self.states.values())
+        pending = list(self.pending.items())
+        heat = self.risk_engine.open_risk_money(positions)
         return {
             "ts": time.time(),
             "runtime_s": round(time.time() - self._started, 1),
@@ -862,7 +879,7 @@ class TradingEngine:
             "heat_pct": round(heat / total_equity * 100.0, 3) if total_equity else 0.0,
             "pending": [{"symbol": p.symbol, "side": p.side, "lots": p.lots,
                          "order_id": p.order_id, "expires_ts": p.expires_ts}
-                        for p in self.pending.items()],
+                        for p in pending],
             "accounts": accounts,
             "total_equity": round(total_equity, 2),
             "unrealised": round(unrealised, 2),
@@ -874,7 +891,7 @@ class TradingEngine:
                     self._mark_price(p), self.router.spec(p.symbol, p.broker).value_per_point_per_lot), 2),
                 "conviction": p.meta.get("conviction"),
                 "regime": p.meta.get("regime"),
-            } for p in self.positions.values()],
+            } for p in positions],
             "symbols": [{
                 "symbol": s.symbol, "broker": s.broker, "status": s.last_status,
                 "bars": s.bar_count,
@@ -887,7 +904,7 @@ class TradingEngine:
                           **{tf: ind.trend_dir for tf, ind in s.context.items()}},
                 "atr": round(s.entry.atr_v, 5) if s.entry.atr_v else None,
                 "rsi": round(s.entry.rsi_v, 1) if s.entry.rsi_v is not None else None,
-            } for s in self.states.values()],
+            } for s in states],
             "reconcile_diffs": len(self._last_diffs),
             "local_stops": sum(1 for p in self.positions.values() if p.meta.get("local_stop")),
             "risk": self.risk_engine.snapshot(list(self.positions.values())),

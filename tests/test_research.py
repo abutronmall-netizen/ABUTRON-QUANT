@@ -8,12 +8,18 @@ import json
 import os
 import tempfile
 import unittest
-from dataclasses import replace
 
 from apex.backtest import BacktestResult
-from apex.research.optimize import (DEFAULT_GRID, PropSimRequest, SweepRequest,
-                                    _apply_params, expand_grid, prop_pass_sim,
-                                    score_result, sweep)
+from apex.research.optimize import (
+    DEFAULT_GRID,
+    PropSimRequest,
+    SweepRequest,
+    _apply_params,
+    expand_grid,
+    prop_pass_sim,
+    score_result,
+    sweep,
+)
 from apex.strategy import StrategyProfile
 
 

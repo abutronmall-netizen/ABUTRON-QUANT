@@ -1,12 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
+from apex.data.mt5 import MT5Config, MT5Connection
 from apex.execution.base import SymbolRegistry
 from apex.execution.mt5 import MT5Broker
 from apex.execution.router import BrokerRouter, Route
 from apex.execution.sim import SimBroker, SimConfig
-from apex.models import AccountState, Order, OrderKind, Position, Quote, Side
-from apex.data.mt5 import MT5Config, MT5Connection
+from apex.models import AccountState, Order, Position, Quote, Side
 
 
 def make_sim(balance=10_000.0, **kw):
@@ -40,8 +40,8 @@ class TestSimBroker(unittest.TestCase):
     def test_close_books_pnl_and_commission(self):
         sim, _ = make_sim()
         sim.set_quote(Quote("XAUUSD", 0.0, 2379.8, 2380.2))
-        ack = sim.submit(Order(symbol="XAUUSD", side=Side.BUY, lots=0.1, broker="sim",
-                               account="SIM-1", sl=2370, tp=2400))
+        sim.submit(Order(symbol="XAUUSD", side=Side.BUY, lots=0.1, broker="sim",
+                         account="SIM-1", sl=2370, tp=2400))
         pos = sim.positions_list()[0]
         sim.set_quote(Quote("XAUUSD", 2.0, 2390.0, 2390.4))
         close = sim.close(pos, "test")

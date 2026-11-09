@@ -2,7 +2,6 @@
 import json
 import os
 import tempfile
-import time
 import unittest
 
 from apex.models import Candidate, Decision, Side

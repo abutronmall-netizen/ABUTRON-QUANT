@@ -15,11 +15,11 @@ explainable.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .indicators import IndicatorSet
-from .models import Quote, Regime, RegimeLabel, Side, Vote
+from .models import Quote, Regime, RegimeLabel, Vote
 
 
 @dataclass(slots=True)
@@ -189,7 +189,7 @@ class ScalpMomentumAgent(Agent):
         # This agent times entries; it must not *create* direction. When it
         # disagrees with the EMA structure it is diluted to a nudge, because
         # standalone micro-momentum on a noisy tape is pure cost-churn.
-        structural = dirn = 1 if m5.ema_spread > 0 else (-1 if m5.ema_spread < 0 else 0)
+        dirn = 1 if m5.ema_spread > 0 else (-1 if m5.ema_spread < 0 else 0)
         aligned = (score > 0) == (dirn > 0)
         if dirn == 0 or not aligned:
             score *= 0.45

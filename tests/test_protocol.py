@@ -1,7 +1,6 @@
 """Protocol-level tests: WebSocket framing, Deriv JSON-RPC flow, adapter safety."""
 import asyncio
 import json
-import struct
 import unittest
 
 from apex.data.deriv import DerivAPI, DerivConfig, DerivError
@@ -249,8 +248,8 @@ class TestDerivBrokerSafety(unittest.TestCase):
 
     def test_modify_is_honest_about_being_unsupported(self):
         broker = DerivBroker(account="D-4", dry_run=True)
-        pos = broker.submit(Order(symbol="R_75", side=Side.BUY, lots=1.0, broker="deriv",
-                                  account="D-4", price=48000.0)).order_id
+        broker.submit(Order(symbol="R_75", side=Side.BUY, lots=1.0, broker="deriv",
+                            account="D-4", price=48000.0))
         ack = broker.modify(broker.positions()[0], 47900, 48200)
         self.assertFalse(ack.ok)
         self.assertIn("not supported", ack.reason)

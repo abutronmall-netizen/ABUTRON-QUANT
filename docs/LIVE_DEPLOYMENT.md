@@ -149,7 +149,10 @@ python3 -m unittest tests.test_live -v
 * Bind to `127.0.0.1` (default) and put a reverse proxy with authentication in front.
 * Set `APEX_DASHBOARD_TOKEN` (or `--token`). Every POST (`kill`, `rearm`, `flatten`) then requires
   `X-Apex-Token`; the portals ask for it once (the **Token** button in the navbar) and keep it in
-  that browser only. The System portal shows the same `apex verify` checklist without a shell.
+  that browser only. **Without a token the control endpoints answer a loopback client only** — if
+  you bind `--host 0.0.0.0` with no token, `apex serve` prints a warning, and a remote POST is
+  refused with 401 rather than flattening the book. The System portal shows the same
+  `apex verify` checklist without a shell.
 * Cross-origin POSTs are rejected outright, so a malicious page cannot flatten your book.
 * The static file handler refuses any path that resolves outside `apex/api/static`.
 

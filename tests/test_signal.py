@@ -11,7 +11,7 @@ from apex.agents import MarketContext, build_agents
 from apex.data.feed import SyntheticConfig, SyntheticFeed
 from apex.indicators import IndicatorSet
 from apex.models import Candidate, ExitReason, Position, Side, TradeRecord, Vote
-from apex.portfolio import PortfolioManager, PortfolioLimits, ReflectionMemory, compute_conviction
+from apex.portfolio import PortfolioLimits, PortfolioManager, ReflectionMemory, compute_conviction
 from apex.regime import detect
 
 

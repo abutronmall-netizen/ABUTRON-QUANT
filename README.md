@@ -59,7 +59,7 @@ python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
 # 6. tests
-python3 -m unittest discover -s tests      # 276 tests
+python3 -m unittest discover -s tests      # 290 tests
 ```
 
 ---
@@ -108,7 +108,8 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **276 tests pass** in ~15 s |
+| Test suite | `python3 -m unittest discover -s tests` | **290 tests pass** in ~17 s |
+| Lint contract | `ruff check apex tests` (F,E9,B,I; CI runs it) | clean |
 | Same seed, same answer | `backtest --bars 3000 --seed 7`, twice | identical metrics (fixed tape anchor, `backtest.ANCHOR_TS`) |
 | Default book, seed 7 | `backtest --bars 3000 --seed 7` | 48 trades, win 22.9%, P&L **−667.94**, PF 0.49, avgR −0.29, maxDD 8.23% → governor halts |
 | Middle three, seed 7 | `backtest --symbols R_25,R_50,R_75 --bars 3000 --seed 7` | 59 trades, win 27.1%, P&L **−655.93**, PF 0.60, avgR −0.23, maxDD 8.15% |
@@ -150,6 +151,7 @@ that produced it has moved on.
 | Reproducible research tape (fixed anchor, seeded) | **Working** | `BacktestRequest.anchor_ts`, `--anchor-ts`; `tests/test_symbols.py` |
 | Seven Bootstrap portals, offline assets, mobile-first | **Working** | `apex/api/static/` (vendored BS 5.3.3); `tests/test_api.py` |
 | Read-only `/api/verify` and `/api/research` endpoints | **Working** | `apex/api/server.py`; `tests/test_api.py` |
+| Journal size tells the truth (main + WAL) and prune truncates the WAL | **Working** | `Store.size_parts`, `Store.prune`; `tests/test_ops.py` |
 | Restart safety: broker book adopted/flattened on boot | **Working** | `engine.boot_sync`, `tests/test_live.py` |
 | Durable risk/prop state across restarts | **Working** | journal `runtime_state`, `engine.export_state` |
 | Supervised Deriv socket: staleness → reconnect → resync | **Working** | `FeedSupervisor` in `apex/live.py` |
@@ -334,7 +336,7 @@ alone overnight; all six are implemented and tested.
 | Process restarts with live positions | `boot_sync` reads the broker book and **adopts** it (default; `--boot-policy flatten` to close instead), then reconciles every 30 s. Adopted positions keep their stops and are managed normally. |
 | Restart refunds the daily budget | Risk and prop state are journalled to `runtime_state` and restored on start: halt kind, day trades, day P&L, prop phase and day counters survive the crash. |
 | The socket dies silently | A Deriv feed with no message for 90 s is *dead*, not quiet: backoff 2→4→…→60 s, resubscribe, resync `warmup_bars` of candles, then carry on. Events are logged. |
-| Anyone can flatten the book | Control endpoints require `X-Apex-Token` when `--token`/`APEX_DASHBOARD_TOKEN` is set, cross-origin POSTs are refused, the server binds `127.0.0.1` by default, and static paths cannot escape the asset directory. |
+| Anyone can flatten the book | Control endpoints require `X-Apex-Token` when `--token`/`APEX_DASHBOARD_TOKEN` is set; **without** a token they answer a loopback client only, cross-origin POSTs are refused, `apex serve` warns loudly if it is bound to a public interface with no token, and static paths cannot escape the asset directory. |
 
 ```bash
 python3 -m apex serve --mode deriv --config config/deriv_prop.json \

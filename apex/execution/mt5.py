@@ -14,8 +14,7 @@ import time
 from typing import Optional
 
 from ..data.mt5 import MT5Config, MT5Connection, MT5Error
-from ..models import (AccountState, Ack, Order, Position, Quote, Side, SymbolSpec,
-                      new_client_id)
+from ..models import AccountState, Ack, Order, Position, Quote, Side, SymbolSpec, new_client_id
 from .base import SymbolRegistry
 
 
@@ -111,7 +110,6 @@ class MT5Broker:
     # ------------------------------------------------------------------ #
     def submit(self, order: Order) -> Ack:
         ts = time.time()
-        spec = self.spec(order.symbol)
         q = self.quote(order.symbol)
         if q is None and not self.unavailable():
             return Ack(ok=False, client_id=order.client_id, ts=ts, reason="no tick",

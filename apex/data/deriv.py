@@ -18,7 +18,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable, Optional
 
 from ..models import Bar, Quote
 from .ws import WebSocketClient

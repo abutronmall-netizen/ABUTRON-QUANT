@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from ..models import (AccountState, Ack, Order, OrderKind, Position, Quote, Side,
-                      SymbolSpec, new_client_id)
+from ..models import AccountState, Ack, Order, OrderKind, Position, Quote, Side, SymbolSpec, new_client_id
 from .base import SymbolRegistry
 
 

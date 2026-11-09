@@ -20,6 +20,8 @@ jobs:
       - name: No third-party runtime dependencies
         run: |
           test ! -s requirements.txt || (echo "requirements.txt must stay empty" && exit 1)
+      - name: Lint (undefined names, bugbear, import order)
+        run: pip install ruff && ruff check apex tests
       - name: Tests
         run: python -m unittest discover -s tests -v
       - name: Doctor (self-test must be green)
@@ -46,3 +48,16 @@ jobs:
       - run: pip install build && python -m build
       - run: python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
       - run: /tmp/venv/bin/apex --version
+      - name: The portals ship their assets
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          required = ("static/index.html", "static/portal.js", "static/theme.css",
+                      "static/vendor/bootstrap/bootstrap.min.css",
+                      "static/vendor/bootstrap/bootstrap.bundle.min.js")
+          missing = [r for r in required if not any(n.endswith(r) for n in names)]
+          assert not missing, f"missing from {wheel}: {missing}"
+          print("portal assets present in the wheel")
+          PY

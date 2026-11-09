@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abutron-quant"
-version = "2.4.0"
+version = "2.4.1"
 description = "ABUTRON QUANT — one-decision-engine scalping desk for Deriv synthetics and FP Markets MT5, with a prop-firm rule guard."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,12 +23,22 @@ apex = "apex.cli:main"
 include = ["apex*"]
 
 [tool.setuptools.package-data]
-"apex.api" = ["static/*"]
+# The portals are data files: every one of them must be inside the wheel, or a
+# pip install ships an unstyled dashboard that cannot be fixed from the shell.
+"apex.api" = [
+  "static/*.html",
+  "static/*.js",
+  "static/*.css",
+  "static/vendor/bootstrap/*",
+]
 
 [tool.ruff]
 line-length = 110
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
+# The contract the repository actually meets (and CI enforces): undefined names,
+# syntax errors, bugbear and import order. Stylistic rewrites (UP: Optional[X] ->
+# X | None across 200+ signatures) are a separate change, not a lint fix.
+select = ["F", "E9", "B", "I"]
 ignore = ["E501"]

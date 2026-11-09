@@ -26,6 +26,20 @@ TIMEFRAMES = {
 }
 
 
+def mt5_installed() -> bool:
+    """Is the Windows-only `MetaTrader5` package importable here?
+
+    Checked without importing it: the package does native initialisation on
+    import on some builds, and a CLI that only wants to refuse clearly should
+    not start a terminal session to find out.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec("MetaTrader5") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 class MT5Error(RuntimeError):
     pass
 

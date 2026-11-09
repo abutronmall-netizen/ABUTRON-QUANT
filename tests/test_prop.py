@@ -1,8 +1,16 @@
 import unittest
 
 from apex.models import Candidate, Decision, Side
-from apex.prop import (DrawdownType, PropChallenge, PropGuard, PropProfile, Verdict,
-                       ftmo_phases, get_profile, plan_for)
+from apex.prop import (
+    DrawdownType,
+    PropChallenge,
+    PropGuard,
+    PropProfile,
+    Verdict,
+    ftmo_phases,
+    get_profile,
+    plan_for,
+)
 
 T0 = 1_700_000_000.0
 DAY = 86400.0

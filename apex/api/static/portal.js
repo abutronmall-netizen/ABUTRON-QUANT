@@ -218,43 +218,55 @@
   function renderLock() {
     const locked = !token();
     document.querySelectorAll("[data-control]").forEach((el) => {
-      el.classList.toggle("disabled", false);        // keep usable; the server decides
-      el.title = locked ? "needs the operator token" : el.dataset.title || "";
+      // the buttons stay clickable: a 401 opens the token dialog, which is the
+      // shortest path from "locked" to "done" for an operator in a hurry
+      el.title = locked
+        ? "needs the operator token — click Token first"
+        : "flatten / kill / re-arm require an explicit confirmation";
     });
-    const badge = $("#lockPill");
-    if (badge) {
-      badge.className = "pill " + (locked ? "warn" : "good");
-      badge.textContent = locked ? "controls: token needed" : "controls: unlocked";
-    }
   }
 
   /* ------------------------------------------------------------------ *
    * state + shell
    * ------------------------------------------------------------------ */
-  const S = { state: null, verify: null, trades: null, research: null,
-              researchAt: 0, error: null, paintedAt: 0 };
+  const S = {
+    state: null, verify: null, trades: null, research: null,
+    tradesAt: 0, verifyAt: 0, researchAt: 0,
+    filter: "",             // symbol filter, survives the two-second repaint
+    inflight: false,        // a slow snapshot must not stack up requests
+    error: null, paintedAt: 0,
+  };
   const PAGE = (document.body.dataset.page || "overview").toLowerCase();
   let timer = null;
 
+  const TRADES_TTL_MS = 10_000;      // the blotter may lag the snapshot by seconds
+  const VERIFY_TTL_MS = 30_000;      // the checklist walks the journal; do not hammer it
+  const RESEARCH_TTL_MS = 15_000;
+
   async function refresh(force = false) {
+    if (S.inflight) return;          // never queue a second snapshot behind a slow one
+    S.inflight = true;
+    const now = Date.now();
     try {
       S.state = await getJSON("/api/state");
       S.error = null;
-      if (PAGE === "positions" && (force || !S.trades)) {
-        try { S.trades = await getJSON("/api/trades"); } catch (_) { S.trades = S.trades || []; }
+      if ((PAGE === "positions" || PAGE === "journal")
+          && (force || !S.trades || now - S.tradesAt > TRADES_TTL_MS)) {
+        try { S.trades = await getJSON("/api/trades?limit=500"); S.tradesAt = Date.now(); }
+        catch (_) { S.trades = S.trades || []; }
       }
-      if (PAGE === "journal" && (force || !S.trades)) {
-        try { S.trades = await getJSON("/api/trades"); } catch (_) { S.trades = S.trades || []; }
-      }
-      if (PAGE === "research" && (force || !S.research || Date.now() - S.researchAt > 15000)) {
+      if (PAGE === "research" && (force || !S.research || now - S.researchAt > RESEARCH_TTL_MS)) {
         try { S.research = await getJSON("/api/research"); S.researchAt = Date.now(); }
         catch (_) { S.research = S.research || null; }
       }
-      if (PAGE === "system" && (force || !S.verify)) {
-        try { S.verify = await getJSON("/api/verify"); } catch (_) { S.verify = null; }
+      if (PAGE === "system" && (force || !S.verify || now - S.verifyAt > VERIFY_TTL_MS)) {
+        try { S.verify = await getJSON("/api/verify"); S.verifyAt = Date.now(); }
+        catch (_) { S.verify = S.verify || null; }
       }
     } catch (err) {
       S.error = err.message;
+    } finally {
+      S.inflight = false;
     }
     paint();
   }
@@ -598,8 +610,12 @@
       pill(p.expires_ts && p.expires_ts * 1000 < Date.now() ? "stale" : "live",
         p.expires_ts && p.expires_ts * 1000 < Date.now() ? "bad" : "good"),
     ]);
-    const trades = (S.trades || (s.recent_trades || []).slice().reverse());
-    const symbols = [...new Set(trades.map((t) => t.symbol))].sort();
+    const all = (S.trades && S.trades.length
+      ? S.trades
+      : (s.recent_trades || []).slice().reverse());
+    const newestFirst = all.slice().reverse();
+    const symbols = [...new Set(newestFirst.map((t) => t.symbol))].sort();
+    const trades = S.filter ? newestFirst.filter((t) => t.symbol === S.filter) : newestFirst;
 
     return `
       <div class="row g-3">
@@ -607,7 +623,7 @@
         ${kpi("Unrealised", money(s.unrealised, ccy), "marked at the touch", signCls(s.unrealised))}
         ${kpi("Risk at stop", money(riskMoney || (s.risk || {}).heat_money, ccy), pct((s.risk || {}).heat_pct))}
         ${kpi("Pending orders", num((s.pending || []).length, 0), "accepted, not filled")}
-        ${kpi("Closed (session)", num(((S.trades || []).length), 0), `${pct((s.metrics || {}).win_rate, 1)} win`)}
+        ${kpi("Closed (session)", num(((s.metrics || {}).trades), 0), `${pct((s.metrics || {}).win_rate, 1)} win`)}
         ${kpi("Kill switch", (s.router || {}).killed ? "ENGAGED" : "released",
           (s.router || {}).killed ? "new orders blocked" : "orders allowed",
           (s.router || {}).killed ? "bad" : "good")}
@@ -635,12 +651,14 @@
       </div>
 
       <div class="row g-3">
-        ${card("Closed trades", tradesTable(trades.slice().reverse(), s, { tall: true }), {
+        ${card("Closed trades", tradesTable(trades, s, { tall: true }), {
           cols: "col-12",
-          aside: `<span class="muted small">${symbols.length} instruments</span>` +
-            (symbols.length ? `<select id="tradeFilter" class="form-select form-select-sm" style="width:auto">
+          aside: `<span class="muted small">${trades.length} shown · ${symbols.length} instruments</span>` +
+            (symbols.length ? `<select id="tradeFilter" class="form-select form-select-sm" style="width:auto"
+                aria-label="filter trades by instrument">
               <option value="">all symbols</option>
-              ${symbols.map((x) => `<option>${esc(x)}</option>`).join("")}</select>` : ""),
+              ${symbols.map((x) => `<option value="${esc(x)}"${x === S.filter ? " selected" : ""}>${esc(x)}</option>`).join("")}
+              </select>` : ""),
         })}
       </div>`;
   }
@@ -846,9 +864,13 @@
         ${card("Journal maintenance", `
           <p class="small muted mb-2">The journal keeps every trade forever and prunes the
           high-frequency tables. Run it from the shell:</p>
-          <pre class="small mb-2" style="white-space:pre-wrap">python3 -m apex prune --db ${esc((S.state || {}).db_path || "runs/live/apex.db")} --days 14</pre>
-          <div class="small d-flex justify-content-between"><span class="muted">File size</span>
+          <pre class="small mb-2" style="white-space:pre-wrap">python3 -m apex prune --db ${esc((s.db_path || "runs/live/apex.db"))} --days 14</pre>
+          <div class="small d-flex justify-content-between"><span class="muted">On disk</span>
             <span class="mono">${num((s.journal_bytes || 0) / 1e6, 2)} MB</span></div>
+          <div class="small d-flex justify-content-between"><span class="muted">· main file</span>
+            <span class="mono">${num(((s.journal_parts || {}).main || 0) / 1e6, 2)} MB</span></div>
+          <div class="small d-flex justify-content-between"><span class="muted">· write-ahead log</span>
+            <span class="mono">${num(((s.journal_parts || {}).wal || 0) / 1e6, 2)} MB</span></div>
           <div class="small d-flex justify-content-between"><span class="muted">Equity points</span>
             <span class="mono">${num((s.equity_history || []).length, 0)}</span></div>
           <div class="small d-flex justify-content-between"><span class="muted">Events</span>
@@ -1037,7 +1059,8 @@
         ${kpi("Clock drift", feed.last_drift_s === null || feed.last_drift_s === undefined ? "not measured"
           : `${signed(feed.last_drift_s, 0)}s`, `${num(feed.drift_warnings, 0)} warnings`)}
         ${kpi("Reconnects", num(safe.reconnects, 0), "socket supervision")}
-        ${kpi("Journal", num((s.journal_bytes || 0) / 1e6, 2) + " MB", `${num(safe.ticks_recorded, 0)} ticks recorded`)}
+        ${kpi("Journal on disk", num((s.journal_bytes || 0) / 1e6, 2) + " MB",
+          `incl. ${num(((s.journal_parts || {}).wal || 0) / 1e6, 2)} MB WAL · ${num(safe.ticks_recorded, 0)} ticks`)}
       </div>
 
       <div class="row g-3 mt-1">
@@ -1138,14 +1161,8 @@
       const filter = $("#tradeFilter");
       if (filter) {
         filter.addEventListener("change", () => {
-          const sym = filter.value;
-          const rows = document.querySelectorAll("#page tbody tr");
-          const trades = (S.trades || []);
-          rows.forEach((row, i) => {
-            const t = trades[trades.length - 1 - i];
-            if (!t) return;
-            row.style.display = !sym || t.symbol === sym ? "" : "none";
-          });
+          S.filter = filter.value || "";
+          paint();
         });
       }
     } catch (err) {

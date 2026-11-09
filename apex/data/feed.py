@@ -14,7 +14,7 @@ import math
 import random
 import time
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterator, Optional
 
 from ..models import Bar, Quote
