@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: No third-party runtime dependencies
+        run: |
+          # requirements.txt is a comment-only placeholder; "-s" treated that
+          # as non-empty and failed on every push. Judge the requirement lines.
+          test -f requirements.txt || exit 0
+          if grep -vE '^[[:space:]]*(#|$)' requirements.txt | grep -q .; then
+            echo "runtime must stay stdlib-only, but requirements.txt lists:"
+            grep -vE '^[[:space:]]*(#|$)' requirements.txt
+            exit 1
+          fi
+      - name: Lint (undefined names, bugbear, import order)
+        run: pip install ruff && ruff check apex tests
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: Doctor (self-test must be green)
+        run: python -m apex doctor
+      - name: Reference backtest produces artifacts
+        run: |
+          python -m apex backtest --symbols R_25,R_50 --bars 1500 --out /tmp/bt
+          test -s /tmp/bt/summary.json
+          test -s /tmp/bt/report.md
+      - name: Journal snapshot is verifiable, and restore round-trips
+        run: |
+          python -m apex backup --run /tmp/bt --out /tmp/bk
+          python -m apex restore --backup "$(ls /tmp/bk/*.db | head -1)" --db /tmp/restored.db
+          test -s /tmp/restored.db
+      - name: Slippage study answers (paper may have too few fills to judge)
+        run: python -m apex slippage --run /tmp/bt || test $? -eq 2
+      - name: Verify the run against the deployment checklist
+        run: python -m apex verify --run /tmp/bt --json
+      - name: Journal maintenance is bounded
+        run: python -m apex prune --db /tmp/bt/apex.db --days 365 --no-vacuum
+      - name: Prop guard does not breach on a random tape
+        run: python -m apex propsim --profile abutron_inhouse --seeds 3 --bars 1500 --out /tmp/ps
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build && python -m build
+      - run: python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
+      - run: /tmp/venv/bin/apex --version
+      - name: The portals ship their assets
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          required = ("static/index.html", "static/portal.js", "static/theme.css",
+                      "static/vendor/bootstrap/bootstrap.min.css",
+                      "static/vendor/bootstrap/bootstrap.bundle.min.js")
+          missing = [r for r in required if not any(n.endswith(r) for n in names)]
+          assert not missing, f"missing from {wheel}: {missing}"
+          print("portal assets present in the wheel")
+          PY

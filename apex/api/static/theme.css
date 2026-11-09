@@ -1,0 +1,232 @@
+/* ABUTRON QUANT — desk theme on top of Bootstrap 5.3 (vendored, no CDN).
+   Dark, dense, number-first. Every layout decision defers to Bootstrap's grid
+   and utilities so the same markup works from a phone to a 4K desk. */
+
+:root {
+  --aq-bg: #0b0f14;
+  --aq-bg-soft: #111823;
+  --aq-panel: #131c27;
+  --aq-panel-2: #17222f;
+  --aq-line: #22303f;
+  --aq-ink: #e8eef6;
+  --aq-muted: #8fa3b8;
+  --aq-accent: #4cc2ff;
+  --aq-good: #35d07f;
+  --aq-bad: #ff5d6c;
+  --aq-warn: #ffb020;
+  --bs-body-bg: var(--aq-bg);
+  --bs-body-color: var(--aq-ink);
+  --bs-secondary-color: var(--aq-muted);
+  --bs-border-color: var(--aq-line);
+  --bs-emphasis-color: #fff;
+  --bs-tertiary-bg: var(--aq-panel-2);
+}
+
+* { scrollbar-width: thin; scrollbar-color: var(--aq-line) transparent; }
+
+body {
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(76, 194, 255, .09), transparent 60%),
+    radial-gradient(900px 500px at -10% 0%, rgba(53, 208, 127, .06), transparent 55%),
+    var(--aq-bg);
+  color: var(--aq-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
+
+.mono, .num, td.num, .kpi b, code {
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- navbar */
+.aq-nav {
+  background: rgba(11, 15, 20, .88);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--aq-line);
+}
+.aq-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  font: 800 12px/1 ui-monospace, monospace;
+  color: #04121b;
+  background: linear-gradient(140deg, var(--aq-accent), var(--aq-good));
+}
+.aq-nav .navbar-brand { letter-spacing: .08em; font-weight: 700; font-size: .95rem; }
+.aq-nav .nav-link {
+  color: var(--aq-muted);
+  font-size: .84rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: .45rem .7rem;
+  border-radius: .5rem;
+}
+.aq-nav .nav-link:hover { color: var(--aq-ink); background: var(--aq-panel-2); }
+.aq-nav .nav-link.active { color: #04121b; background: var(--aq-accent); }
+
+/* ----------------------------------------------------------------- layout */
+.aq-main { padding: 1rem clamp(.6rem, 1.6vw, 1.6rem) 3rem; max-width: 1900px; }
+.aq-section-title {
+  font-size: .72rem;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--aq-muted);
+  margin: 1.4rem 0 .5rem;
+}
+.aq-section-title:first-child { margin-top: .25rem; }
+
+.card {
+  --bs-card-bg: var(--aq-panel);
+  --bs-card-border-color: var(--aq-line);
+  --bs-card-cap-bg: var(--aq-panel-2);
+  color: var(--aq-ink);
+  border-radius: .75rem;
+  margin-bottom: 1rem;
+}
+.card-header {
+  font-size: .72rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--aq-muted);
+  padding: .55rem .85rem;
+  border-bottom: 1px solid var(--aq-line);
+}
+.card-header .badge { letter-spacing: .04em; text-transform: none; }
+.card-body { padding: .85rem; }
+.card-body.tight { padding: .1rem .4rem .3rem; }
+
+/* -------------------------------------------------------------------- KPI */
+.kpi {
+  background: linear-gradient(180deg, var(--aq-panel-2), var(--aq-panel));
+  border: 1px solid var(--aq-line);
+  border-radius: .75rem;
+  padding: .7rem .85rem;
+  height: 100%;
+}
+.kpi .k {
+  display: block;
+  font-size: .66rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--aq-muted);
+}
+.kpi b { display: block; font-size: clamp(1.05rem, 1.5vw, 1.45rem); line-height: 1.25; }
+.kpi em { display: block; font-style: normal; font-size: .72rem; color: var(--aq-muted); }
+
+/* ----------------------------------------------------------------- tables */
+.table {
+  --bs-table-bg: transparent;
+  --bs-table-color: var(--aq-ink);
+  --bs-table-border-color: var(--aq-line);
+  --bs-table-striped-bg: rgba(255, 255, 255, .018);
+  --bs-table-hover-bg: rgba(76, 194, 255, .06);
+  font-size: .82rem;
+  margin-bottom: 0;
+}
+.table > :not(caption) > * > * { padding: .38rem .5rem; vertical-align: middle; }
+.table thead th {
+  font-size: .64rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--aq-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--aq-panel);
+  z-index: 2;
+}
+.table-scroll { max-height: 22rem; overflow: auto; }
+.table-scroll.tall { max-height: 34rem; }
+
+/* ------------------------------------------------------------------ chips */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .12rem .5rem;
+  border-radius: 999px;
+  border: 1px solid var(--aq-line);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  color: var(--aq-muted);
+  white-space: nowrap;
+}
+.pill.good { color: var(--aq-good); border-color: rgba(53, 208, 127, .45); background: rgba(53, 208, 127, .08); }
+.pill.bad  { color: var(--aq-bad);  border-color: rgba(255, 93, 108, .45); background: rgba(255, 93, 108, .08); }
+.pill.warn { color: var(--aq-warn); border-color: rgba(255, 176, 32, .45); background: rgba(255, 176, 32, .08); }
+.pill.live { color: #04121b; background: var(--aq-good); border-color: var(--aq-good); font-weight: 700; }
+
+.good { color: var(--aq-good); }
+.bad { color: var(--aq-bad); }
+.warn { color: var(--aq-warn); }
+.muted { color: var(--aq-muted); }
+
+/* ------------------------------------------------------------------- bars */
+.aq-bar {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .06);
+  overflow: hidden;
+  min-width: 60px;
+}
+.aq-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--aq-accent), #7ee0c0);
+}
+.aq-bar.bad > span { background: linear-gradient(90deg, var(--aq-warn), var(--aq-bad)); }
+.aq-bar.good > span { background: linear-gradient(90deg, #22a86a, var(--aq-good)); }
+
+.aq-vote { display: flex; align-items: center; gap: .35rem; font-size: .72rem; }
+.aq-vote .name { width: 5.4rem; color: var(--aq-muted); }
+.aq-vote .bar { flex: 1; height: 5px; background: rgba(255, 255, 255, .06); border-radius: 999px; position: relative; }
+.aq-vote .bar i { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: var(--aq-accent); }
+.aq-vote .bar i.neg { background: var(--aq-bad); }
+
+/* ------------------------------------------------------------------ misc */
+.aq-rej { display: flex; align-items: center; gap: .5rem; margin-bottom: .3rem; font-size: .76rem; }
+.aq-rej .code { flex: 0 0 10.5rem; color: var(--aq-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aq-rej .n { flex: 0 0 3.2rem; text-align: right; }
+
+.aq-event { border-left: 2px solid var(--aq-line); padding: .1rem 0 .1rem .55rem; margin-bottom: .35rem; font-size: .76rem; }
+.aq-event.error, .aq-event.risk { border-color: var(--aq-bad); }
+.aq-event.warn, .aq-event.feed { border-color: var(--aq-warn); }
+.aq-event.control, .aq-event.reconcile { border-color: var(--aq-accent); }
+.aq-event b { font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: .64rem; color: var(--aq-muted); }
+
+canvas.aq-canvas { width: 100%; height: clamp(140px, 22vh, 240px); display: block; }
+
+.aq-quote { font-size: clamp(.85rem, 1vw, 1rem); }
+.aq-symbol-card .card-header { display: flex; justify-content: space-between; align-items: center; }
+
+.aq-foot {
+  border-top: 1px solid var(--aq-line);
+  color: var(--aq-muted);
+  font-size: .72rem;
+  padding: .8rem clamp(.6rem, 1.6vw, 1.6rem) 1.6rem;
+}
+
+.aq-lock {
+  border: 1px dashed rgba(255, 176, 32, .5);
+  background: rgba(255, 176, 32, .06);
+  border-radius: .75rem;
+  padding: .7rem .9rem;
+  margin-bottom: 1rem;
+}
+
+/* Bootstrap modals/toasts in the dark theme */
+.modal-content { background: var(--aq-panel); color: var(--aq-ink); border: 1px solid var(--aq-line); }
+.toast { --bs-toast-bg: var(--aq-panel); --bs-toast-border-color: var(--aq-line); --bs-toast-color: var(--aq-ink); }
+.toast-container { z-index: 1080; }
+
+@media (max-width: 575.98px) {
+  .aq-main { padding: .6rem .55rem 2.5rem; }
+  .kpi b { font-size: 1rem; }
+  .aq-rej .code { flex-basis: 7rem; }
+  .card { border-radius: .6rem; }
+}

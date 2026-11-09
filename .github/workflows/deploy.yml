@@ -1,0 +1,122 @@
+name: deploy
+
+# Installs the apex engine onto YOUR server via SSH from a GitHub-hosted runner.
+# This is the pipeline to use when the server accepts inbound SSH.
+# If it cannot, use deploy-self-hosted.yml instead.
+#
+# What this does:
+#   1. checks out this repo
+#   2. sshes into the server and runs scripts/install_remote.sh
+#      (clone/pull -> venv -> pip install -e . -> systemd unit, NOT started)
+# What it NEVER does:
+#   - start or restart the trading service (requires the start_service input,
+#     default OFF — the unit runs with --live)
+#   - write/overwrite $INSTALL_DIR/.env on the server
+#   - print secret values (host/user/key are passed via env and ssh-agent style files)
+#
+# Required secrets (repo Settings -> Secrets and variables -> Actions):
+#   APEX_HOST        server hostname or IP
+#   APEX_USER        ssh user (root or passwordless sudo)
+#   APEX_SSH_KEY     PRIVATE key (ed25519 recommended) — dedicated deploy key
+# Optional:
+#   APEX_PORT        ssh port (default 22)
+#   APEX_KNOWN_HOSTS to pin host keys strictly; if unset, ssh-keyscan (TOFU) is used
+#
+# SECURITY: this repo is public — workflow logs are public. Make the repo
+# private first (docs/DEPLOY_GITHUB_RUNNER.md), and never echo secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to install"
+        default: "main"
+        required: true
+        type: string
+      install_dir:
+        description: "Install directory on the server"
+        default: "/opt/abutron-quant"
+        required: true
+        type: string
+      start_service:
+        description: "Restart apex.service after install. The unit runs with --live — leave OFF unless you intend this."
+        default: false
+        required: false
+        type: boolean
+  push:
+    branches: [main]   # install-only on main merges; NEVER restarts the service
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apex-deploy
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Install on server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APEX_HOST: ${{ secrets.APEX_HOST }}
+      APEX_USER: ${{ secrets.APEX_USER }}
+      APEX_SSH_KEY: ${{ secrets.APEX_SSH_KEY }}
+      APEX_PORT: ${{ secrets.APEX_PORT }}
+      APEX_KNOWN_HOSTS: ${{ secrets.APEX_KNOWN_HOSTS }}
+      IN_REF: ${{ inputs.ref || github.ref_name }}
+      IN_DIR: ${{ inputs.install_dir || '/opt/abutron-quant' }}
+      IN_START: ${{ inputs.start_service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight — required secrets present
+        run: |
+          missing=0
+          for v in APEX_HOST APEX_USER APEX_SSH_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Missing repository secret $v — see docs/DEPLOY_GITHUB_RUNNER.md"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Set up SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$APEX_SSH_KEY" > ~/.ssh/apex_deploy_key
+          chmod 600 ~/.ssh/apex_deploy_key
+          PORT="${APEX_PORT:-22}"
+          if [ -n "$APEX_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$APEX_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            # first-use trust-on-first-use; set APEX_KNOWN_HOSTS to pin strictly
+            ssh-keyscan -p "$PORT" -H "$APEX_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload installer and run it on the server
+        run: |
+          PORT="${APEX_PORT:-22}"
+          REFQ=$(printf '%q' "$IN_REF")
+          DIRQ=$(printf '%q' "$IN_DIR")
+          START_FLAG=""
+          if [ "$IN_START" = "true" ]; then START_FLAG="--start-service"; fi
+          scp -i ~/.ssh/apex_deploy_key -P "$PORT" -o BatchMode=yes \
+            scripts/install_remote.sh "$APEX_USER@$APEX_HOST:/tmp/apex-install.sh"
+          ssh -i ~/.ssh/apex_deploy_key -p "$PORT" -o BatchMode=yes \
+            "$APEX_USER@$APEX_HOST" \
+            "bash /tmp/apex-install.sh --ref $REFQ --dir $DIRQ $START_FLAG"
+          ssh -i ~/.ssh/apex_deploy_key -p "$PORT" -o BatchMode=yes \
+            "$APEX_USER@$APEX_HOST" "rm -f /tmp/apex-install.sh"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## apex deploy — \`${IN_REF}\` -> ${IN_DIR} on the configured server"
+            echo ""
+            echo "- service started: \`${IN_START:-false}\` (installs never restart it unless requested)"
+            echo "- next step: ensure \`$IN_DIR/.env\` exists on the server, then"
+            echo "  \`sudo systemctl start apex\` — see docs/LIVE_DEPLOYMENT.md gates before \`--live\`"
+          } >> "$GITHUB_STEP_SUMMARY"

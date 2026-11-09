@@ -1,0 +1,7 @@
+# ABUTRON QUANT has NO required third-party dependencies.
+# The engine, WebSocket client, indicators, journal and dashboard are stdlib-only.
+#
+# Optional extras:
+#   MetaTrader5>=5.0.45   # Windows only, required for live FP Markets execution
+#   ruff                  # linting
+#   mypy                  # type checking

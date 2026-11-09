@@ -1,0 +1,22 @@
+{
+  "_comment": "Custom challenge rules. Anything not listed falls back to PropProfile defaults. Pass with --prop config/prop_ftmo_custom.json",
+  "name": "my_firm_eval",
+  "profit_target_pct": 8.0,
+  "max_daily_loss_pct": 5.0,
+  "max_total_loss_pct": 10.0,
+  "min_trading_days": 5,
+  "max_calendar_days": 30,
+  "drawdown_type": "static",
+  "consistency_pct": 30.0,
+  "max_lots": 2.0,
+  "max_open_positions": 3,
+  "max_trades_per_day": 8,
+  "stop_loss_required": true,
+  "weekend_flat": true,
+  "daily_reset_hour_utc": 0,
+  "risk_per_trade_pct": 0.4,
+  "max_risk_per_trade_pct": 0.8,
+  "risk_off_after_daily_loss_pct": 2.5,
+  "profit_lock_after_target": true,
+  "notes": "Replace with the exact numbers from your firm's terms before trading."
+}
