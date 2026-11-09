@@ -65,6 +65,8 @@ class DashboardState:
         self._cache_ts = 0.0
         self._verify_cache: dict = {}
         self._verify_ts = 0.0
+        self._slippage_cache: dict = {}
+        self._slippage_ts = 0.0
 
     def snapshot(self, max_age: float = 1.0) -> dict:
         with self._lock:
@@ -193,6 +195,29 @@ class DashboardState:
             out[key].sort(key=lambda r: -float(r.get("mtime") or 0))
         return out
 
+    def _journal_path(self) -> str:
+        db = getattr(getattr(self.runner, "store", None), "path", "")
+        if db:
+            return os.path.abspath(db)
+        return os.path.join(self._runs_root(), "live", "apex.db")
+
+    def slippage(self, max_age: float = 60.0) -> dict:
+        """Live-versus-modelled fill slippage, read-only from the journal."""
+        with self._lock:
+            now = time.time()
+            if self._slippage_cache and now - self._slippage_ts < max_age:
+                return self._slippage_cache
+        try:
+            from ..slippage import MODELLED_ENTRY_BPS, SlippageConfig, study
+            report = study(SlippageConfig(db_path=self._journal_path(),
+                                          modelled_bps=MODELLED_ENTRY_BPS))
+        except Exception as exc:                 # never take the dashboard down
+            report = {"verdict": "error", "fills": 0, "detail": f"{type(exc).__name__}: {exc}",
+                      "overall": {}, "by_symbol": {}, "by_broker": {}, "by_side": {}}
+        with self._lock:
+            self._slippage_cache, self._slippage_ts = report, time.time()
+        return report
+
     def verify(self, max_age: float = 30.0) -> dict:
         """Read-only: run `apex verify` against the runner's own journal."""
         with self._lock:
@@ -317,6 +342,8 @@ def make_handler(state: DashboardState):
                 return self._json(state.verify())
             if path == "/api/research":
                 return self._json(state.research())
+            if path == "/api/slippage":
+                return self._json(state.slippage())
             if path == "/api/stream":
                 return self._stream()
             if path.startswith("/static/"):

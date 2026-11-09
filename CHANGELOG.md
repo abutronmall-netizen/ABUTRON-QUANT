@@ -3,6 +3,49 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.5.0 — measure what the venue charges, and make the evidence recoverable
+
+Two of the four items `docs/RESEARCH.md` §7 listed as "deliberately not
+implemented" were code-only gaps, not research dreams. They are implemented.
+
+**The slippage study (`apex/slippage.py`, `apex slippage`).** The journal has
+carried `requested_price` since 2.3.1 and `filled_price` since the first release;
+nobody had turned the pair into the number that decides whether a scalper is
+viable. It now reports:
+- adverse fill bps per fill (positive = worse), with **mean, median, IQR, worst**
+  and the share of fills worse than the backtest's 0.3 bps model;
+- the same broken down by instrument, broker and side;
+- **cost in R**: `bps / 10_000 × price / stop_distance`, summed across the journal,
+  because a third of an R per trade is what kills a 1.8R-target scalper;
+- an explicit verdict — `inside model`, `under-modelled`, `insufficient sample`
+  (fewer than 5 fills is noise, and the report says so rather than printing a
+  confident median over three rows).
+
+The journal is opened `mode=ro`: grading a live journal can never create a table,
+migrate a column or checkpoint a WAL out from under the engine. `apex verify`'s
+`prices` check now reports the median and the R cost alongside the mean, and the
+Research portal carries a "fill slippage vs the cost model" card with the recent
+fills next to it.
+
+**Backup and restore (`apex/backup.py`, `apex backup` / `apex restore`).** The
+desk could prune its journal but not snapshot it, and every "we have a copy"
+story ends the same way: a `cp apex.db` taken mid-write, with a stale `-wal`
+beside it.
+- `create_backup` uses `sqlite3.Connection.backup()` — consistent while the engine
+  writes — flips the copy to `journal_mode=DELETE` so it is one self-contained
+  file, and writes a manifest with row counts, size and sha256.
+- `restore_backup` verifies the sha256, refuses to overwrite an existing journal
+  without `--force`, and deletes stale `-wal`/`-shm` beside the target first (a
+  restored main file next to an old WAL quietly keeps the rows you replaced).
+- retention: `--keep N` prunes the oldest snapshots with their manifests.
+
+**The SMTP path had no test.** `tests/test_slippage.py::TestMailTransport` now
+covers delivery (host, STARTTLS, login, subject) and a server that refuses the
+connection (returns False, never raises). It shipped untested because "fail-open"
+made it invisible; it is still fail-open, now on purpose.
+
+Tests: 309 (was 290).
+
 ## 2.4.1 — the numbers an operator reads, and the paths that produced them
 
 A pass over everything the 2.4.0 portals put in front of a person, plus the

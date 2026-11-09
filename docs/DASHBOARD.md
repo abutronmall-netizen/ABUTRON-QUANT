@@ -49,6 +49,11 @@ Backtests, parameter sweeps and prop simulations found under `runs/`, with the s
 printed **above** the numbers and the exact command needed to reproduce the latest run. A negative
 result is displayed as a negative result.
 
+It is also where the **slippage study** lives: median/IQR adverse bps against the backtest's cost
+model, the share of fills worse than that model, the cost in R per trade, a per-instrument table and
+the most recent fills side by side. On paper the fill is the touch, so the card reads as a
+simulator check until real orders exist — the panel says so instead of implying otherwise.
+
 ### System — `/system`
 Deployment state: `apex verify` checklist (fills, prices, P&L, rejections, reconciliation, kill
 switch, stops, pending orders, heartbeat), safety flags (boot policy, persistence, reconciliation
@@ -66,6 +71,7 @@ token / control buttons.
 | GET | `/api/health` | none | `{ok, uptime_s, version}` |
 | GET | `/api/verify` | none | `apex verify` checklist against the runner journal, cached 30 s |
 | GET | `/api/research` | none | `runs/**/summary.json`, `sweep.json`, `propsim_*.json`; read-only, size-capped |
+| GET | `/api/slippage` | none | live-vs-modelled fill slippage from the journal, cached 60 s, read-only |
 | GET | `/api/stream` | none | server-sent snapshot, 2 s |
 | POST | `/api/control/kill` | token | flatten + block new orders |
 | POST | `/api/control/flatten` | token | close every position at the touch |

@@ -58,8 +58,16 @@ python3 -m apex fetch --symbol R_75 --bars 5000
 python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
-# 6. tests
-python3 -m unittest discover -s tests      # 290 tests
+# 6. what the venue actually did to your fills (read-only, works on paper too)
+python3 -m apex slippage --run runs/live
+#    median vs the backtest's 0.3 bps model, IQR, and the cost in R per trade
+
+# 7. snapshot the journal before you touch anything
+python3 -m apex backup --run runs/live --out backups --keep 14
+python3 -m apex restore --backup backups/apex-<stamp>.db --db runs/live/apex.db --force
+
+# 8. tests
+python3 -m unittest discover -s tests      # 309 tests
 ```
 
 ---
@@ -108,7 +116,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **290 tests pass** in ~17 s |
+| Test suite | `python3 -m unittest discover -s tests` | **309 tests pass** in ~18 s |
 | Lint contract | `ruff check apex tests` (F,E9,B,I; CI runs it) | clean |
 | Same seed, same answer | `backtest --bars 3000 --seed 7`, twice | identical metrics (fixed tape anchor, `backtest.ANCHOR_TS`) |
 | Default book, seed 7 | `backtest --bars 3000 --seed 7` | 48 trades, win 22.9%, P&L **−667.94**, PF 0.49, avgR −0.29, maxDD 8.23% → governor halts |
@@ -150,7 +158,9 @@ that produced it has moved on.
 | One symbol universe: R_10…R_100 by default, per-broker books | **Working** | `apex/symbols.py`; `tests/test_symbols.py` |
 | Reproducible research tape (fixed anchor, seeded) | **Working** | `BacktestRequest.anchor_ts`, `--anchor-ts`; `tests/test_symbols.py` |
 | Seven Bootstrap portals, offline assets, mobile-first | **Working** | `apex/api/static/` (vendored BS 5.3.3); `tests/test_api.py` |
-| Read-only `/api/verify` and `/api/research` endpoints | **Working** | `apex/api/server.py`; `tests/test_api.py` |
+| Read-only `/api/verify`, `/api/research`, `/api/slippage` endpoints | **Working** | `apex/api/server.py`; `tests/test_api.py` |
+| Live-vs-modelled slippage study (median, IQR, cost in R) | **Working** | `apex/slippage.py`, `apex slippage`, Research portal; `tests/test_slippage.py` |
+| Journal backup with a verifiable manifest, and restore | **Working** | `apex/backup.py`, `apex backup/restore`; `tests/test_slippage.py` |
 | Journal size tells the truth (main + WAL) and prune truncates the WAL | **Working** | `Store.size_parts`, `Store.prune`; `tests/test_ops.py` |
 | Restart safety: broker book adopted/flattened on boot | **Working** | `engine.boot_sync`, `tests/test_live.py` |
 | Durable risk/prop state across restarts | **Working** | journal `runtime_state`, `engine.export_state` |
@@ -280,6 +290,9 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex report --run runs/bt_x` | summarise a run |
 | `apex ai --test` | check the optional local LLM reviewer (wired into entries, advisory by default) |
 | `apex verify --run runs/live` | grade a journal against the demo checklist; `--live` judges slippage strictly |
+| `apex slippage --run runs/live` | measured adverse fill bps vs the backtest model, with the cost in R |
+| `apex backup --run runs/live --out backups` | consistent journal snapshot + sha256 manifest, retention |
+| `apex restore --backup <file> --db <path> --force` | restore a snapshot (refuses a tampered or clobbered target) |
 | `apex watchdog` | separate process: watch the heartbeat, alert, flatten if the engine dies |
 | `apex prune --db runs/live/apex.db --days 14` | bound journal growth (keeps trades) |
 
@@ -321,7 +334,7 @@ apex/
 docs/                architecture, audit response, prop playbook, deployment, research
 .github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
-tests/               275 unit + integration tests
+tests/               309 unit + integration tests
 ```
 
 ---

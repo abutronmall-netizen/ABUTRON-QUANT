@@ -183,6 +183,14 @@ python3 -m apex serve --mode deriv --config config/deriv_prop.json --live \
   --heartbeat runs/live/heartbeat.json --alert-webhook "$APEX_ALERT_WEBHOOK"
 
 # second process, own service unit (deploy/apex-watchdog.service)
+# Before the demo week: snapshot the journal. Before you *restore* anything, read
+# the manifest — the restore refuses a snapshot whose sha256 no longer matches.
+python3 -m apex backup --run runs/live --out backups --keep 14
+python3 -m apex restore --backup backups/apex-<stamp>.db --db runs/live/apex.db --force
+
+# After the demo week: what the venue actually charged you, in R.
+python3 -m apex slippage --run runs/live
+
 python3 -m apex watchdog --heartbeat runs/live/heartbeat.json \
   --stale 30 --interval 5 --webhook "$APEX_ALERT_WEBHOOK"
 ```

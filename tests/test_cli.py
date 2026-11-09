@@ -113,6 +113,41 @@ class TestCommands(unittest.TestCase):
         args = build_parser().parse_args(["backtest"])
         self.assertEqual(_broker_key(args), "deriv")
 
+    def test_slippage_reports_and_exits_nonzero_without_fills(self):
+        tmp = tempfile.mkdtemp()
+        code, out = run(["slippage", "--run", os.path.join(tmp, "nothing")])
+        self.assertEqual(code, 2)
+        self.assertIn("slippage study", out)
+        self.assertIn("no journal", out)
+
+    def test_backup_then_restore_round_trips(self):
+        tmp = tempfile.mkdtemp()
+        bt = os.path.join(tmp, "bt")
+        run(["backtest", "--symbols", "R_25", "--bars", "300", "--out", bt])
+        out_dir = os.path.join(tmp, "bk")
+        code, out = run(["backup", "--run", bt, "--out", out_dir])
+        self.assertEqual(code, 0)
+        self.assertIn("sha256", out)
+        backups = [f for f in os.listdir(out_dir) if f.endswith(".db")]
+        self.assertEqual(len(backups), 1)
+        target = os.path.join(tmp, "restored", "apex.db")
+        code, out = run(["restore", "--backup", os.path.join(out_dir, backups[0]),
+                         "--db", target])
+        self.assertEqual(code, 0)
+        self.assertIn("restored", out)
+        self.assertTrue(os.path.exists(target))
+
+    def test_restore_without_force_refuses(self):
+        tmp = tempfile.mkdtemp()
+        bt = os.path.join(tmp, "bt")
+        run(["backtest", "--symbols", "R_25", "--bars", "200", "--out", bt])
+        out_dir = os.path.join(tmp, "bk")
+        run(["backup", "--run", bt, "--out", out_dir])
+        name = [f for f in os.listdir(out_dir) if f.endswith(".db")][0]
+        code, out = run(["restore", "--backup", os.path.join(out_dir, name), "--run", bt])
+        self.assertEqual(code, 2)
+        self.assertIn("--force", out)
+
     def test_fetch_without_mt5_exits_with_a_clear_code(self):
         code, out = run(["fetch", "--broker", "mt5", "--symbol", "EURUSD", "--bars", "10"])
         self.assertEqual(code, 2)

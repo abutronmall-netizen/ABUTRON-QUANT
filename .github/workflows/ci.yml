@@ -31,6 +31,13 @@ jobs:
           python -m apex backtest --symbols R_25,R_50 --bars 1500 --out /tmp/bt
           test -s /tmp/bt/summary.json
           test -s /tmp/bt/report.md
+      - name: Journal snapshot is verifiable, and restore round-trips
+        run: |
+          python -m apex backup --run /tmp/bt --out /tmp/bk
+          python -m apex restore --backup "$(ls /tmp/bk/*.db | head -1)" --db /tmp/restored.db
+          test -s /tmp/restored.db
+      - name: Slippage study answers (paper may have too few fills to judge)
+        run: python -m apex slippage --run /tmp/bt || test $? -eq 2
       - name: Verify the run against the deployment checklist
         run: python -m apex verify --run /tmp/bt --json
       - name: Journal maintenance is bounded

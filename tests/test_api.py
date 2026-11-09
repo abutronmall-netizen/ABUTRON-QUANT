@@ -175,6 +175,13 @@ class TestDashboardAPI(unittest.TestCase):
             self.assertIn(key, report)
         self.assertTrue(report["caveat"])
 
+    def test_slippage_endpoint_always_answers(self):
+        code, body, _ = self._req("/api/slippage")
+        self.assertEqual(code, 200)
+        report = json.loads(body)
+        for key in ("fills", "verdict", "overall", "by_symbol", "modelled_bps"):
+            self.assertIn(key, report)
+
     def test_verify_endpoint_degrades_without_a_journal(self):
         code, body, _ = self._req("/api/verify")
         self.assertEqual(code, 200)

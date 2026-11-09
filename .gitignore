@@ -10,6 +10,7 @@ venv/
 
 # runtime artifacts (journals, runs, cached market data)
 runs/
+backups/
 data/*.csv
 data/ticks*
 *.ticks.csv

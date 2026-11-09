@@ -384,6 +384,53 @@ def cmd_fetch(args) -> int:
     return 0
 
 
+def cmd_slippage(args) -> int:
+    """What the venue did to the price the engine asked for."""
+    from .slippage import SlippageConfig, as_text, study
+    db = args.db or os.path.join(args.run, "apex.db")
+    cfg = SlippageConfig(
+        db_path=db,
+        since_s=(args.since_hours * 3600.0) if args.since_hours else None,
+        modelled_bps=args.modelled_bps,
+    )
+    report = study(cfg)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(as_text(report))
+        print("\nThis is a measurement of one venue, one week and one instrument set; "
+              "it is not a forecast.")
+    return 0 if report.get("fills") else 2
+
+
+def cmd_backup(args) -> int:
+    from .backup import BackupError, create_backup
+    try:
+        out = create_backup(args.db or os.path.join(args.run, "apex.db"),
+                            args.out, keep=args.keep)
+    except BackupError as exc:
+        print(f"[!] {exc}")
+        return 2
+    print(f"backup -> {out['path']}")
+    print(f"  {out['counts']} · {out['size_bytes']/1e6:.2f} MB · sha256 {out['sha256'][:16]}…")
+    if out.get("pruned"):
+        print(f"  pruned {out['pruned']} older backup(s)")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    from .backup import BackupError, restore_backup
+    try:
+        out = restore_backup(args.backup, args.db or os.path.join(args.run, "apex.db"),
+                             force=args.force)
+    except BackupError as exc:
+        print(f"[!] {exc}")
+        return 2
+    print(f"restored {out['source']} -> {out['path']}")
+    print(f"  {out['counts']}" + ("  (verified sha256)" if out["verified"] else "  (no manifest)"))
+    return 0
+
+
 def cmd_news(args) -> int:
     from .news import NewsCalendar
     cal = NewsCalendar.load(args.file)
@@ -641,6 +688,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--drop-trades", action="store_true", help="also delete old trades")
     sp.add_argument("--no-vacuum", action="store_true")
     sp.set_defaults(func=cmd_prune)
+
+    sp = sub.add_parser("slippage", help="live-vs-modelled slippage study from the journal")
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None, help="journal path (default: <run>/apex.db)")
+    sp.add_argument("--since-hours", type=float, default=None)
+    sp.add_argument("--modelled-bps", type=float, default=0.3,
+                    help="the backtest's entry slippage assumption")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_slippage)
+
+    sp = sub.add_parser("backup", help="consistent snapshot of the journal (+ manifest)")
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None)
+    sp.add_argument("--out", default="backups")
+    sp.add_argument("--keep", type=int, default=14, help="keep this many snapshots")
+    sp.set_defaults(func=cmd_backup)
+
+    sp = sub.add_parser("restore", help="restore a journal from a backup snapshot")
+    sp.add_argument("--backup", required=True)
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None)
+    sp.add_argument("--force", action="store_true", help="overwrite an existing journal")
+    sp.set_defaults(func=cmd_restore)
 
     sp = sub.add_parser("verify", help="automate the demo-validation checklist from a journal")
     sp.add_argument("--run", default="runs/live")

@@ -159,7 +159,24 @@ with your broker's statement before trusting any P&L.
   is nothing).
 * Deflated Sharpe / multiple-testing correction across the sweep. With 48 combinations, the best
   in-sample score is biased upward by roughly `σ × √(2 ln N)`.
-* A live-vs-backtest slippage study from the journal (`orders.filled_price` vs signal price).
 
 These are listed rather than implemented because inventing them half-way would produce false
 confidence, which is the failure this whole repository is arguing against.
+
+**Done since the list was written (2.5.0): the live-vs-backtest slippage study.**
+
+```bash
+python3 -m apex slippage --run runs/live              # human report
+python3 -m apex slippage --run runs/live --json       # for a notebook
+python3 -m apex slippage --run runs/live --since-hours 24 --modelled-bps 0.3
+```
+
+It reports median/IQR adverse bps per fill, per instrument, broker and side, and converts the
+slippage into **R** (`bps / 10_000 × price / stop_distance`), which is the only form that matters
+to a fixed-fractional scalper: 2 bps on a 6 bps ATR stop is a third of an R, and a strategy with a
+1.8R target cannot pay that and stay alive. Fewer than five fills prints `insufficient sample`
+instead of a median.
+
+Read it after a demo week, not before: on paper the fill *is* the touch, so the study measures the
+simulator until real orders exist. `apex verify --live` grades the same distribution with a limit;
+this command explains it.

@@ -154,7 +154,8 @@ def _checks(store: Store, cfg: VerifyConfig, since: float, now: float) -> list[d
             "SELECT ts,symbol,price FROM signals WHERE ts >= ? AND price > 0 "
             "ORDER BY ts", (since,)).fetchall():
         ref.setdefault(row[1], []).append((float(row[0]), float(row[2])))
-    slips = []
+    slips: list[float] = []
+    r_costs: list[float] = []
     for o in filled:
         # First-class column (v2.3.1+), then the JSON the order was recorded with,
         # then the engine's decision price from a nearby signal row.
@@ -169,24 +170,35 @@ def _checks(store: Store, cfg: VerifyConfig, since: float, now: float) -> list[d
         if req <= 0 or got <= 0:
             continue
         adverse = (got - req) if str(o["side"]).upper().startswith("B") else (req - got)
-        slips.append(adverse / req * 1e4)
+        bps = adverse / req * 1e4
+        slips.append(bps)
+        stop = float((o.get("order_json") or {}).get("sl") or 0.0)
+        risk_px = abs(req - stop) if stop > 0 else 0.0
+        if risk_px > 0:
+            r_costs.append(bps / 1e4 * req / risk_px)
     if len(slips) < 3:
         checks.append(_check("prices", True,
                              f"too few fills to judge slippage ({len(slips)})",
                              severity="info"))
     else:
         mean = sum(slips) / len(slips)
+        ordered = sorted(slips)
+        mid = len(ordered) // 2
+        median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
         var = sum((s - mean) ** 2 for s in slips) / max(1, len(slips) - 1)
         stderr = (var ** 0.5) / (len(slips) ** 0.5)
         biased = mean > cfg.slippage_bps_limit and mean > 2 * stderr
+        r_cost = (sum(r_costs) / len(r_costs)) if r_costs else None
         checks.append(_check(
             "prices", not biased,
-            f"mean adverse slippage {mean:+.2f} bps over {len(slips)} fill(s) "
-            f"(±{stderr:.2f}, limit {cfg.slippage_bps_limit:.1f})"
+            f"mean adverse slippage {mean:+.2f} bps (median {median:+.2f}) over {len(slips)} "
+            f"fill(s), ±{stderr:.2f}, limit {cfg.slippage_bps_limit:.1f}"
+            + (f"; costs {r_cost:+.3f}R per trade" if r_cost is not None else "")
             + ("" if cfg.live else " — paper fills execute at the touch, judge this on demo"),
             severity="fail" if cfg.live else "warn",
-            data={"n": len(slips), "mean_bps": round(mean, 3),
-                  "stderr_bps": round(stderr, 3), "biased": biased}))
+            data={"n": len(slips), "mean_bps": round(mean, 3), "median_bps": round(median, 3),
+                  "stderr_bps": round(stderr, 3), "biased": biased,
+                  "mean_r_cost": round(r_cost, 4) if r_cost is not None else None}))
 
     # 3. P&L agrees with the equity curve -----------------------------------
     equity = store.equity_curve(limit=100000)

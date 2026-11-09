@@ -230,8 +230,8 @@
    * state + shell
    * ------------------------------------------------------------------ */
   const S = {
-    state: null, verify: null, trades: null, research: null,
-    tradesAt: 0, verifyAt: 0, researchAt: 0,
+    state: null, verify: null, trades: null, research: null, slippage: null,
+    tradesAt: 0, verifyAt: 0, researchAt: 0, slippageAt: 0,
     filter: "",             // symbol filter, survives the two-second repaint
     inflight: false,        // a slow snapshot must not stack up requests
     error: null, paintedAt: 0,
@@ -258,6 +258,10 @@
       if (PAGE === "research" && (force || !S.research || now - S.researchAt > RESEARCH_TTL_MS)) {
         try { S.research = await getJSON("/api/research"); S.researchAt = Date.now(); }
         catch (_) { S.research = S.research || null; }
+      }
+      if (PAGE === "research" && (force || !S.slippage || now - S.slippageAt > 60_000)) {
+        try { S.slippage = await getJSON("/api/slippage"); S.slippageAt = Date.now(); }
+        catch (_) { S.slippage = S.slippage || null; }
       }
       if (PAGE === "system" && (force || !S.verify || now - S.verifyAt > VERIFY_TTL_MS)) {
         try { S.verify = await getJSON("/api/verify"); S.verifyAt = Date.now(); }
@@ -961,6 +965,41 @@
         o.breach ? `<span class="bad small">${esc(o.breach)}</span>` : '<span class="muted">—</span>',
       ]), { empty: "no outcomes" }) : `<p class="muted small mb-0">no prop simulations</p>`;
 
+    const slip = S.slippage;
+    const slipKind = slip
+      ? (slip.verdict === "under-modelled" ? "warn"
+        : slip.verdict === "inside model" ? "good"
+          : slip.verdict === "error" ? "bad" : "")
+      : "";
+    const slipBody = slip ? `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="muted small">${num(slip.fills, 0)} fill(s) with a requested and a filled price</span>
+        ${pill(slip.verdict || "—", slipKind)}
+      </div>
+      <p class="small mb-2">${esc(slip.detail || "")}</p>
+      ${slip.overall && slip.overall.n ? `
+        <div class="row row-cols-2 row-cols-md-4 g-2 mb-2 text-center">
+          <div class="col"><div class="muted" style="font-size:.62rem">MEDIAN</div>
+            <div class="mono">${signed(slip.overall.median_bps, 2)} bps</div></div>
+          <div class="col"><div class="muted" style="font-size:.62rem">IQR</div>
+            <div class="mono small">${num(slip.overall.p25_bps, 2)}…${num(slip.overall.p75_bps, 2)}</div></div>
+          <div class="col"><div class="muted" style="font-size:.62rem">WORSE THAN MODEL</div>
+            <div class="mono">${pct(slip.overall.worse_than_modelled_pct, 0)}</div></div>
+          <div class="col"><div class="muted" style="font-size:.62rem">COST / TRADE</div>
+            <div class="mono">${slip.overall.mean_r_cost === null ? "—" : signed(slip.overall.mean_r_cost, 3) + "R"}</div></div>
+        </div>
+        ${table(["Instrument", "Fills", "Median bps", "Model bps", "Verdict"],
+          Object.entries(slip.by_symbol || {}).map(([sym, g]) => [
+            `<span class="mono">${esc(sym)}</span>`, num(g.n, 0),
+            signed(g.median_bps, 2), num(slip.modelled_bps, 2),
+            pill(g.median_bps > slip.modelled_bps ? "under-modelled" : "inside model",
+              g.median_bps > slip.modelled_bps ? "warn" : "good"),
+          ]), { empty: "no fills per instrument" })}` : ""}
+      <p class="small muted mt-2 mb-0">Positive is adverse: the venue filled worse than the engine
+      asked. The backtest models ${num((slip || {}).modelled_bps, 2)} bps; this is one venue, one
+      week, one instrument set — a measurement, not a forecast.</p>`
+      : `<p class="muted small mb-0">reading the journal…</p>`;
+
     const reproduce = latest
       ? (() => {
           const req = latest.request || {};
@@ -1007,6 +1046,19 @@
           <p class="small muted mb-0">A negative backtest is information, not a bug: it is why the
           system ships with a hard risk governor instead of a promise.</p>`,
           { cols: "col-12 col-xxl-4" })}
+      </div>
+
+      <div class="row g-3">
+        ${card("Fill slippage vs the cost model", slipBody, { cols: "col-12 col-xl-6" })}
+        ${card("Recent fills", table(
+          ["When", "Instrument", "Side", "Requested", "Filled", "Adverse"],
+          ((slip || {}).recent || []).map((f) => [
+            `<span class="muted small">${dt(f.ts)}</span>`,
+            `<span class="mono">${esc(f.symbol)}</span>`,
+            sidePill(f.side), num(f.requested), num(f.filled),
+            `<span class="${f.bps > 0 ? "warn" : "muted"} mono">${signed(f.bps, 2)} bps</span>`,
+          ]), { empty: "no fills with a price on both sides yet" }),
+          { cols: "col-12 col-xl-6" })}
       </div>
 
       <div class="row g-3">
