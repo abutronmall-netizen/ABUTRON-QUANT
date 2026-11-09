@@ -57,6 +57,26 @@ python3 -m unittest discover -s tests      # 109 tests
 
 ---
 
+## Measured on this build
+
+These numbers are reproducible with the commands shown and exist to calibrate the harness — they
+are **not** a performance claim.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Test suite | `python3 -m unittest discover -s tests` | **109 tests pass** in ~4 s |
+| Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
+| Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
+| Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
+| Prop pass rate (8% target, 28 synthetic days) | `propsim --profile abutron_inhouse --seeds 8` | pass 0%, breach 0%, median profit +1.6% |
+
+The random-walk row is the important one: a system with look-ahead would look profitable there
+too. It does not. The structured row shows the pipeline can capture real persistence when the tape
+provides it. The prop rows show the guard prevents self-inflicted breaches while an 8% target
+remains unreachable without a genuine edge — exactly the honest state of affairs.
+
+---
+
 ## What is actually working
 
 | Capability | State | Evidence |

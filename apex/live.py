@@ -33,7 +33,7 @@ from .models import Quote
 from .portfolio import ReflectionMemory
 from .prop import PropGuard, get_profile, plan_for
 from .risk import RiskConfig
-from .store import Store
+from .store import Store, compute_metrics
 from .strategy import StrategyProfile
 
 
@@ -78,6 +78,7 @@ class LiveRunner:
         self._stop = threading.Event()
         self._async_stop: Optional[asyncio.Event] = None
         self._builders: dict[str, LiveBarBuilder] = {}
+        self.session_start = time.time()
         self._thread: Optional[threading.Thread] = None
 
         self.strategy = StrategyProfile.preset(cfg.strategy)
@@ -275,8 +276,13 @@ class LiveRunner:
         snap = self.engine.snapshot()
         snap["mode"] = self.cfg.mode
         snap["live_orders"] = self.cfg.live_orders
-        snap["signal_stats"] = self.store.signal_stats()
-        snap["metrics"] = self.store.metrics()
+        snap["session_start"] = self.session_start
+        # Session-scoped metrics: the dashboard must describe what the operator is
+        # watching right now, not rows left over from a previous run in the journal.
+        snap["signal_stats"] = dict(self.engine.rejections)
+        snap["metrics"] = compute_metrics([t.as_dict() for t in self.engine.trades],
+                                          initial_equity=self.cfg.initial_balance)
+        snap["journal_metrics"] = self.store.metrics()
         snap["events"] = self.store.recent_events(40)
         snap["signals"] = self.store.recent_signals(30)
         snap["symbol_names"] = {s: SYMBOL_NAMES.get(s, s) for s in self.engine.states}
