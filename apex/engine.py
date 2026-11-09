@@ -18,6 +18,7 @@ from typing import Callable, Optional
 
 from .agents import MarketContext
 from .data.feed import BarAggregator
+from .execution.pending import PendingBook, PendingOrder
 from .execution.router import BrokerRouter, Route
 from .indicators import IndicatorSet
 from .models import (AccountState, Bar, Candidate, Decision, ExitReason, Order, Position,
@@ -28,6 +29,7 @@ from .regime import detect
 from .risk import RiskConfig, RiskEngine, session_day
 from .store import Store
 from .strategy import StrategyProfile, build_candidate, manage_position
+from .watchdog import clear_flatten_request, flatten_requested
 
 TF_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}
 
@@ -45,6 +47,8 @@ class EngineConfig:
     adopt_on_boot: bool = True
     ai_review: bool = False          # optional local LLM review of sized entries
     ai_mode: str = "advisory"        # advisory (log only) | veto (may block)
+    scale_out_r: float = 0.0         # take this fraction off at +R (0 disables)
+    scale_out_frac: float = 0.5      # fraction of the position to take off
     equity_every: int = 1
     correlation_groups: dict[str, str] = field(default_factory=lambda: {
         "R_10": "vol10", "1HZ10V": "vol10",
@@ -129,6 +133,9 @@ class TradingEngine:
         self._started = now or time.time()
         self._flattened_today: Optional[int] = None
         self._last_diffs: list[dict] = []
+        self._last_watchdog_check = 0.0
+        self.pending = PendingBook()
+        self._last_pending_poll = 0.0
 
     # ------------------------------------------------------------------ #
     # events
@@ -260,7 +267,8 @@ class TradingEngine:
             risk_pct = self.prop.pacing(ts)["recommended_risk_pct"]
 
         decision = self.risk_engine.evaluate(cand, spec, acct, list(self.positions.values()),
-                                             ts, risk_pct=risk_pct)
+                                             ts, risk_pct=risk_pct,
+                                             groups=self.cfg.correlation_groups)
         if not decision.allowed:
             if self.store is not None and self.cfg.record_all_signals:
                 self.store.record_signal(cand, decision.code, decision.reason, decision.detail, ts=ts)
@@ -305,8 +313,7 @@ class TradingEngine:
             return
 
         if getattr(ack, "state", "filled") == "pending" or (ack.lots or 0.0) <= 0.0:
-            self._event("order", f"pending {cand.side.value} {lots} {cand.symbol} "
-                                 f"(not filled yet, ref {ack.order_id})")
+            self._track_pending(order, ack, cand, decision, ts)
             self._reject("PENDING_FILL", "order accepted but not filled", cand)
             return
 
@@ -358,6 +365,18 @@ class TradingEngine:
             bars_held = (st.bar_count - pos.meta.get("entry_bar", 0)) if st else 0
             action = manage_position(pos, price, atr, bars_held, self.strategy, spec)
 
+            if (self.cfg.scale_out_r > 0 and not pos.meta.get("scaled_out")
+                    and action.exit_reason is None):
+                init_risk = abs(pos.entry - float(pos.meta.get("sl_initial") or pos.sl or pos.entry))
+                r_now = ((price - pos.entry) * pos.side.sign / init_risk) if init_risk else 0.0
+                if r_now >= self.cfg.scale_out_r:
+                    part = round(pos.lots * min(max(self.cfg.scale_out_frac, 0.05), 0.95), 8)
+                    min_lot = spec.min_lot if spec else 0.0
+                    if part >= min_lot and pos.lots - part >= min_lot:
+                        self.close_position(pos, ExitReason.TAKE_PROFIT, price,
+                                            f"scale-out at {r_now:+.2f}R", volume=part)
+                        continue
+
             if action.exit_reason is not None:
                 reason = action.exit_reason
                 if reason is ExitReason.STOP_LOSS:
@@ -369,6 +388,89 @@ class TradingEngine:
                 self.close_position(pos, reason, price, action.detail)
             elif action.new_sl is not None and action.new_sl != pos.sl:
                 self._update_stop(pos, action.new_sl)
+
+    # ------------------------------------------------------------------ #
+    # pending orders: an accepted order is live risk until the venue says no
+    # ------------------------------------------------------------------ #
+    def _track_pending(self, order: Order, ack: Ack, cand: Candidate,
+                       decision: Decision, ts: float) -> None:
+        risk_money = float(decision.detail.get("risk_money") or
+                           abs(cand.price - cand.sl) * (order.lots or 0.0) *
+                           self.router.spec(cand.symbol, order.broker).value_per_point_per_lot)
+        po = PendingOrder(
+            client_id=order.client_id, order_id=ack.order_id, broker=order.broker,
+            account=order.account, symbol=order.symbol, side=cand.side.value,
+            lots=order.lots, sl=cand.sl, tp=cand.tp, entry_hint=cand.price,
+            created_ts=ts, expires_ts=ts + max(60.0, order.ttl_s), risk_money=risk_money,
+            strategy=self.strategy.name,
+            meta={"conviction": cand.conviction, "regime": cand.regime,
+                  "votes": [{"agent": v.agent, "score": round(v.score, 3)} for v in cand.votes],
+                  "atr": cand.meta.get("atr"), "rr": cand.rr, "client_id": order.client_id},
+        )
+        self.pending.add(po)
+        self._event("order", f"pending {cand.side.value} {order.lots} {cand.symbol} "
+                             f"ref {ack.order_id or order.client_id} (tracked)")
+
+    def poll_pending(self, now: Optional[float] = None, force: bool = False) -> dict:
+        """Resolve tracked pending orders. Idempotent and safe to call often."""
+        now = now if now is not None else time.time()
+        if not force and now - self._last_pending_poll < 5:
+            return {"filled": 0, "cancelled": 0, "expired": 0, "checked": 0}
+        self._last_pending_poll = now
+        out = {"filled": 0, "cancelled": 0, "expired": 0, "checked": 0}
+        for po in self.pending.items():
+            out["checked"] += 1
+            po.checks += 1
+            status = self.router.order_status(po.broker, po.account, po.order_id) or {}
+            state = str(status.get("state") or "unknown")
+            if state == "filled":
+                self._materialise_pending(po, status, now)
+                out["filled"] += 1
+                continue
+            if state in ("cancelled", "rejected"):
+                self.pending.remove(po.client_id)
+                self._reject("PENDING_CANCELLED", f"order {po.order_id} {state}")
+                self._event("order", f"pending {po.symbol} {state} at venue")
+                out["cancelled"] += 1
+                continue
+            if po.expired(now):
+                self.router.cancel(po.broker, po.account, po.order_id)
+                self.pending.remove(po.client_id)
+                self._reject("PENDING_EXPIRED", f"order {po.order_id} not filled in time")
+                self._event("order", f"pending {po.symbol} expired, cancel requested")
+                out["expired"] += 1
+        return out
+
+    def _materialise_pending(self, po: PendingOrder, status: dict, now: float) -> None:
+        spec = self.router.spec(po.symbol, po.broker)
+        lots = float(status.get("filled_lots") or po.lots)
+        price = float(status.get("filled_price") or 0.0) or po.entry_hint or self._mark_price_guess(po.symbol)
+        risk = po.risk_money * (lots / po.lots) if po.lots else po.risk_money
+        pos = Position(
+            id=str(status.get("position_id") or po.order_id or po.client_id),
+            symbol=po.symbol, side=Side(po.side), lots=lots, entry=price,
+            sl=po.sl, tp=po.tp, opened_ts=now, broker=po.broker, account=po.account,
+            strategy=po.strategy, contract_id=str(po.order_id),
+            commission=float(status.get("commission") or 0.0),
+            meta={**po.meta, "risk_money": risk, "sl_initial": po.sl,
+                  "entry_bar_ts": now, "late_fill": True},
+        )
+        self.positions[pos.id] = pos
+        self.pending.remove(po.client_id)
+        self.orders_filled += 1
+        if self.prop is not None:
+            self.prop.on_fill(now)
+        self._event("entry", f"LATE FILL {po.side} {lots} {po.symbol} @ {price:.2f} "
+                             f"(order {po.order_id})")
+        if self.store is not None:
+            self.store.record_event("entry", f"late fill {po.symbol} {lots} @ {price}")
+
+    def _mark_price_guess(self, symbol: str) -> float:
+        q = self.router.quote(symbol)
+        if q is not None:
+            return q.mid
+        st = self.states.get(symbol)
+        return st.last_quote.mid if st and st.last_quote else 0.0
 
     def _ai_review(self, cand: Candidate, lots: float, decision: Decision) -> tuple[bool, dict]:
         """Optional model review of an already-sized trade.
@@ -422,20 +524,30 @@ class TradingEngine:
         return False
 
     def close_position(self, pos: Position, reason: ExitReason, price: float,
-                       detail: str = "") -> Optional[TradeRecord]:
-        ack = self.router.close(pos, reason.value, price)
+                       detail: str = "", volume: Optional[float] = None) -> Optional[TradeRecord]:
+        """Close all of a position, or `volume` lots of it (a scale-out).
+
+        A partial close realises P&L and shrinks the position; it does not end
+        the trade's life, so the position stays open with proportionally less
+        risk and the remainder is closed normally later.
+        """
+        lots_before = float(pos.lots)
+        partial = volume is not None and 0 < float(volume) < lots_before - 1e-9
+        ack = self.router.close(pos, reason.value, price,
+                               volume=float(volume) if partial else None)
         if not ack.ok:
             self._event("error", f"close failed for {pos.symbol}: {ack.reason}")
             return None
         spec = self.router.spec(pos.symbol, pos.broker)
         exit_px = ack.filled_price or price
-        pnl = (exit_px - pos.entry) * pos.side.sign * pos.lots * spec.value_per_point_per_lot
+        lots_closed = min(lots_before, float(ack.lots or lots_before))
+        pnl = (exit_px - pos.entry) * pos.side.sign * lots_closed * spec.value_per_point_per_lot
         commission = (pos.commission or 0.0) + (ack.commission or 0.0)
         pnl -= (ack.commission or 0.0)
         risk_money = pos.meta.get("risk_money") or 0.0
         r_mult = pnl / risk_money if risk_money else 0.0
         trade = TradeRecord(
-            trade_id=new_client_id("tr"), symbol=pos.symbol, side=pos.side, lots=pos.lots,
+            trade_id=new_client_id("tr"), symbol=pos.symbol, side=pos.side, lots=lots_closed,
             entry=pos.entry, exit=exit_px, opened_ts=pos.opened_ts, closed_ts=ack.ts,
             pnl=round(pnl, 2), commission=round(commission, 4), strategy=pos.strategy,
             broker=pos.broker, account=pos.account, exit_reason=reason,
@@ -444,19 +556,34 @@ class TradingEngine:
             mfe=round(pos.max_favorable, 5), mae=round(pos.max_adverse, 5),
             meta={"detail": detail, "votes": pos.meta.get("votes", []),
                   "entry": pos.entry, "sl_initial": pos.meta.get("sl_initial"),
-                  "rr": pos.meta.get("rr")},
+                  "rr": pos.meta.get("rr"), "partial": partial,
+                  "open_position": pos.id},
         )
-        self.positions.pop(pos.id, None)
+        ended = lots_closed >= lots_before - 1e-9
+        if ended:
+            self.positions.pop(pos.id, None)
+        else:
+            pos.lots = round(lots_before - lots_closed, 8)
+            pos.meta["scaled_out"] = True
+            pos.meta["realised_pnl"] = round(
+                float(pos.meta.get("realised_pnl") or 0.0) + pnl, 4)
+            if risk_money:
+                pos.meta["risk_money"] = risk_money * pos.lots / lots_before
         self.trades.append(trade)
         self.risk_engine.on_trade_closed(trade.pnl, ack.ts)
         if self.prop is not None:
             self.prop.on_trade_closed(trade, ack.ts)
-        if self.memory is not None:
+        if self.memory is not None and ended:
             self.memory.update(trade)
         if self.store is not None:
             self.store.record_trade(trade)
-        self._event("exit", f"{trade.symbol} {reason.value} pnl {trade.pnl:+.2f} "
-                            f"({trade.r_multiple:+.2f}R)")
+        if partial:
+            self._event("exit", f"{trade.symbol} SCALE-OUT {lots_closed:g}/{lots_before:g} lots "
+                                f"pnl {trade.pnl:+.2f} ({trade.r_multiple:+.2f}R), "
+                                f"{pos.lots:g} left")
+        else:
+            self._event("exit", f"{trade.symbol} {reason.value} pnl {trade.pnl:+.2f} "
+                                f"({trade.r_multiple:+.2f}R)")
         return trade
 
     def on_bar_brackets(self, bar: Bar) -> None:
@@ -538,6 +665,9 @@ class TradingEngine:
 
     def cycle_guard(self) -> None:
         """Called by runners: enforces the risk engine's halt on live positions."""
+        self._watchdog_check()
+        if len(self.pending):
+            self.poll_pending()
         if self.risk_engine.state.halted and self.positions:
             self._event("risk", f"halt: {self.risk_engine.state.halt_reason} -> flattening")
             self.flatten_all("risk_halt")
@@ -579,7 +709,16 @@ class TradingEngine:
         return adopted
 
     def boot_sync(self, policy: str = "adopt", ts: Optional[float] = None) -> dict:
-        """Reconcile on startup: adopt broker positions or flatten everything."""
+        """Reconcile on startup: adopt broker positions or flatten everything.
+
+        A watchdog flatten request always wins over adoption: a crash that left
+        unprotected positions must end flat, not inherited.
+        """
+        req = flatten_requested(self.store)
+        if req is not None:
+            policy = "flatten"
+            self._event("control", f"watchdog flatten request honoured at boot "
+                                   f"({req.get('reason')})")
         try:
             broker_positions = self.router.positions()
         except Exception as exc:                      # a dead adapter must not block boot
@@ -612,7 +751,8 @@ class TradingEngine:
                                "opened_ts": p.opened_ts, "broker": p.broker,
                                "account": p.account, "strategy": p.strategy,
                                "contract_id": p.contract_id, "meta": p.meta}
-                              for p in self.positions.values()]}
+                              for p in self.positions.values()],
+                "pending": self.pending.export()}
 
     def import_state(self, data: dict) -> None:
         if not isinstance(data, dict):
@@ -633,7 +773,12 @@ class TradingEngine:
             except Exception:
                 continue
             self.positions[pos.id] = pos
+        try:
+            self.pending = PendingBook(data.get("pending") or [])
+        except Exception:
+            self.pending = PendingBook()
         self._event("info", f"state restored: {len(self.positions)} position(s), "
+                            f"{len(self.pending)} pending order(s), "
                             f"halted={self.risk_engine.state.halted}")
 
     def save_state(self, key: str = "engine") -> bool:
@@ -653,6 +798,28 @@ class TradingEngine:
             return False
         self.import_state(data)
         return True
+
+    def _watchdog_check(self, ts: Optional[float] = None) -> None:
+        """Honour a flatten request written by the out-of-process watchdog."""
+        if self.store is None:
+            return
+        now = ts if ts is not None else time.time()
+        if now - self._last_watchdog_check < 5:
+            return
+        self._last_watchdog_check = now
+        req = flatten_requested(self.store, now)
+        if req is None:
+            return
+        self._event("control", f"watchdog flatten request: {req.get('reason')}")
+        if self.positions:
+            self.flatten_all("watchdog")
+        try:
+            self.router.kill(flatten=True)
+        except Exception:
+            pass
+        self.risk_engine.halt("watchdog flatten request", kind="manual")
+        clear_flatten_request(self.store)
+        self.save_state()
 
     def reconcile(self) -> list[dict]:
         diffs = self.router.reconcile(list(self.positions.values()))
@@ -679,9 +846,15 @@ class TradingEngine:
                 px = q.bid if p.side is Side.BUY else q.ask
                 unrealised += p.unrealised(px, spec.value_per_point_per_lot)
 
+        heat = self.risk_engine.open_risk_money(list(self.positions.values()))
         return {
             "ts": time.time(),
             "runtime_s": round(time.time() - self._started, 1),
+            "heat_money": round(heat, 2),
+            "heat_pct": round(heat / total_equity * 100.0, 3) if total_equity else 0.0,
+            "pending": [{"symbol": p.symbol, "side": p.side, "lots": p.lots,
+                         "order_id": p.order_id, "expires_ts": p.expires_ts}
+                        for p in self.pending.items()],
             "accounts": accounts,
             "total_equity": round(total_equity, 2),
             "unrealised": round(unrealised, 2),

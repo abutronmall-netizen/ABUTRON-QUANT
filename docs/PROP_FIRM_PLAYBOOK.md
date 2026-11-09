@@ -63,6 +63,19 @@ Without the per-trade cap, six losses at 0.4% risk breach a 4% daily limit in an
 is exactly what happened in an early build of this repo until the guard was corrected — the
 `propsim` breach rate went from 50% to 0%.
 
+### 1b. Two budgets: the firm's and yours
+
+`PropGuard` enforces the firm's numbers. `RiskConfig.max_heat_pct` enforces *yours*: the aggregate
+open risk across the whole book as a percentage of equity. They are not the same test — the prop
+book cap is expressed against the **remaining daily budget**, so late in a good day it can allow a
+book that is large in absolute terms; the heat cap is expressed against **equity** and does not
+move. Set it well inside the firm's limit (1–1.5% on a 4–5% daily limit) and use
+`max_group_heat_pct` so that three correlated index trades cannot masquerade as diversification.
+
+Sessions matter here too. `session_hours` sets windows per symbol or per correlation group
+(`{"XAUUSD": [7, 20], "us_index": [13, 20]}`), because gold at 03:00 and the S&P at 03:00 are not
+the same trade. The global `session_start_utc/session_end_utc` remains the fallback.
+
 ### 2. Risk per trade
 
 `plan_for(profile, equity)` chooses:

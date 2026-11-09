@@ -26,9 +26,13 @@ jobs:
         run: python -m apex doctor
       - name: Reference backtest produces artifacts
         run: |
-          python -m apex backtest --symbols R_25,R_50 --bars 1500 --no-record --out /tmp/bt
+          python -m apex backtest --symbols R_25,R_50 --bars 1500 --out /tmp/bt
           test -s /tmp/bt/summary.json
           test -s /tmp/bt/report.md
+      - name: Verify the run against the deployment checklist
+        run: python -m apex verify --run /tmp/bt --json
+      - name: Journal maintenance is bounded
+        run: python -m apex prune --db /tmp/bt/apex.db --days 365 --no-vacuum
       - name: Prop guard does not breach on a random tape
         run: python -m apex propsim --profile abutron_inhouse --seeds 3 --bars 1500 --out /tmp/ps
 

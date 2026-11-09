@@ -13,6 +13,8 @@ worst failure mode was ambiguity about whether a component was actually trading.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import zlib
 import threading
 import time
@@ -57,8 +59,7 @@ class LiveConfig:
     live_orders: bool = False                 # must be explicitly true to trade
     warmup_bars: int = 80
     preload_bars: int = 0          # paper mode: replay N bars so the desk opens with history
-    bar_seconds: float = 3.0       # wall-clock seconds per bar in paper mode
-    bar_seconds_override: Optional[float] = None   # demo speed-up for paper mode
+    bar_seconds: float = 3.0       # wall-clock seconds per bar (demo pacing)
     seed: int = 11
     trend_strength: float = 1.2
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -72,6 +73,9 @@ class LiveConfig:
     ai_mode: str = "advisory"           # advisory | veto
     ai_url: str = "http://127.0.0.1:11434"
     ai_model: str = "qwen2.5:1.5b"
+    alerts: dict = field(default_factory=dict)     # see apex/alerts.py
+    db_retention_days: float = 0.0                 # 0 keeps everything
+    heartbeat_path: str = ""                        # watchdog heartbeat file
 
 
 class LiveRunner:
@@ -89,8 +93,24 @@ class LiveRunner:
         self._async_stop: Optional[asyncio.Event] = None
         self._builders: dict[str, LiveBarBuilder] = {}
         self.session_start = time.time()
+        self._last_heartbeat = 0.0
         self._thread: Optional[threading.Thread] = None
 
+        from .alerts import notifier_from_config
+        self.notifier = notifier_from_config({"alerts": cfg.alerts})
+        # A paper tape advances at demo speed; only a real venue has a clock to drift.
+        self.feed_monitor = FeedMonitor(
+            bar_seconds=_tf(cfg.tf), drift_warn_s=0.0 if cfg.mode == "paper" else 5.0,
+            on_event=self._monitor_event)
+        if cfg.db_retention_days > 0:
+            try:
+                pruned = self.store.prune(cfg.db_retention_days)
+                vac = self.store.vacuum()
+                self.store.record_event(
+                    "info", f"journal pruned ({cfg.db_retention_days:g}d): "
+                            f"{pruned}, reclaimed {vac['reclaimed']} bytes")
+            except Exception as exc:
+                self.store.record_event("warn", f"journal maintenance failed: {exc}")
         self.strategy = StrategyProfile.preset(cfg.strategy)
         self.strategy.entry_tf = cfg.tf
         self.risk_cfg = cfg.risk
@@ -118,6 +138,7 @@ class LiveRunner:
                              ai_review=cfg.ai_review, ai_mode=cfg.ai_mode),
             strategy=self.strategy, risk=self.risk_cfg, prop=self.prop,
             store=self.store, memory=self.memory, now=time.time(), reviewer=reviewer,
+            on_event=self._on_engine_event,
         )
         self._last_reconcile = 0.0
         self.news = None
@@ -133,6 +154,51 @@ class LiveRunner:
             self.ticks = TickRecorder(cfg.record_ticks)
         if cfg.persist_state:
             self._restore_state()
+
+    # ------------------------------------------------------------------ #
+    def _on_engine_event(self, kind: str, message: str) -> None:
+        """Forward only the events an operator must not miss."""
+        if kind in ("risk", "reconcile", "error", "control", "warn"):
+            self.notifier.from_event(kind, message)
+
+    def heartbeat(self) -> dict:
+        now = time.time()
+        return {
+            "ts": now,
+            "pid": os.getpid(),
+            "mode": self.cfg.mode,
+            "live_orders": self.cfg.live_orders,
+            "session_start": self.session_start,
+            "killed": self.router.killed,
+            "halted": self.engine.risk_engine.state.halted,
+            "halt_kind": self.engine.risk_engine.state.halt_kind,
+            "local_stops": sum(1 for p in self.engine.positions.values()
+                               if p.meta.get("local_stop")),
+            "positions": [{"symbol": p.symbol, "side": p.side.value, "lots": p.lots,
+                           "entry": p.entry, "sl": p.sl, "broker": p.broker,
+                           "local_stop": bool(p.meta.get("local_stop"))}
+                          for p in self.engine.positions.values()],
+            "reconnects": getattr(self.deriv_api, "reconnects", 0) if self.deriv_api else 0,
+            "pending": len(self.engine.pending),
+            "feed": dict(self.feed_monitor.stats),
+        }
+
+    def _write_heartbeat(self, force: bool = False) -> None:
+        if not self.cfg.heartbeat_path:
+            return
+        now = time.time()
+        if not force and now - self._last_heartbeat < 1.0:
+            return
+        self._last_heartbeat = now
+        try:
+            path = self.cfg.heartbeat_path
+            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.heartbeat(), fh, default=str)
+            os.replace(tmp, path)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     def _restore_state(self) -> None:
@@ -284,6 +350,14 @@ class LiveRunner:
         self._stop.set()
 
     # ------------------------------------------------------------------ #
+    def _monitor_event(self, kind: str, msg: str) -> None:
+        """Feed-health warnings go to the journal *and* the notifier."""
+        self.store.record_event(kind, msg)
+        try:
+            self.notifier.from_event(kind, msg)
+        except Exception:
+            pass
+
     def _process_bar(self, broker: str, sym: str, bar) -> None:
         """One bar through the full live path (quote -> engine -> brackets -> manage)."""
         port = self.brokers.get(broker)
@@ -295,15 +369,21 @@ class LiveRunner:
             port.set_quote(q)
         if self.ticks is not None:
             self.ticks.write(q)
+        self.feed_monitor.on_tick(q.ts)
+        if self.engine.paused:
+            pass                       # warmup/resync bars are not live stream
+        else:
+            self.feed_monitor.on_bar(sym, bar.ts)
         self.engine.set_quote(q)
         self.engine.on_bar(bar)
         self.engine.on_bar_brackets(bar)
         self.engine.on_quote(q)
         self.engine.cycle_guard()
+        self._write_heartbeat()
 
     def _run_paper(self) -> None:
         assert isinstance(self.feed, _PaperFeed)
-        period = self.cfg.bar_seconds_override or self.cfg.bar_seconds
+        period = self.cfg.bar_seconds
         while not self._stop.is_set():
             t0 = time.time()
             for broker, symbols in self.cfg.symbols_by_broker.items():
@@ -324,13 +404,16 @@ class LiveRunner:
                 time.sleep(2)
                 continue
             for q in quotes:
+                self.feed_monitor.on_tick(q.ts)
                 self.engine.on_quote(q)
                 closed = builders[q.symbol].on_tick(q.ts, q.mid)
                 if closed is not None:
+                    self.feed_monitor.on_bar(q.symbol, closed.ts)
                     self.engine.set_quote(q)
                     self.engine.on_bar(closed)
             self.engine.cycle_guard()
             self._maybe_reconcile()
+            self._write_heartbeat()
             time.sleep(max(0.2, 1.0 / 4))
 
     async def _make_deriv_session(self):
@@ -345,6 +428,7 @@ class LiveRunner:
         return _DerivSession(api, feed)
 
     def _on_deriv_quote(self, q: Quote) -> None:
+        self.feed_monitor.on_tick(q.ts)
         self.engine.on_quote(q)
         if self.ticks is not None:
             self.ticks.write(q)
@@ -353,6 +437,7 @@ class LiveRunner:
             return
         closed = b.on_tick(q.ts, q.mid)
         if closed is not None:
+            self.feed_monitor.on_bar(q.symbol, closed.ts)
             self.engine.set_quote(q)
             self.engine.on_bar(closed)
 
@@ -405,6 +490,8 @@ class LiveRunner:
         snap["metrics"] = compute_metrics([t.as_dict() for t in self.engine.trades],
                                           initial_equity=self.cfg.initial_balance)
         snap["journal_metrics"] = self.store.metrics()
+        snap["feed_health"] = dict(self.feed_monitor.stats)
+        snap["journal_bytes"] = self.store.size_bytes()
         snap["events"] = self.store.recent_events(40)
         snap["signals"] = self.store.recent_signals(30)
         snap["symbol_names"] = {s: SYMBOL_NAMES.get(s, s) for s in self.engine.states}
@@ -431,6 +518,7 @@ class LiveRunner:
 
     def shutdown(self) -> None:
         self.stop()
+        self._write_heartbeat(force=True)
         if self.ticks is not None:
             try:
                 self.ticks.close()
@@ -496,6 +584,71 @@ class _DerivSession:
             await self.api.close()
         except Exception:
             pass
+
+
+class FeedMonitor:
+    """Detects the two silent failures a heartbeat cannot see.
+
+    `FeedSupervisor` catches a socket that *stopped*. It cannot catch a socket
+    that is alive but delivering the wrong thing: a gap in the bar stream (the
+    venue throttled, or the process was paused) or a server clock that has
+    drifted from UTC (stops and session windows are then computed against the
+    wrong time). Both are measured, warned about once per episode, and counted.
+    """
+
+    def __init__(self, bar_seconds: float = 300.0, max_gap_bars: float = 2.5,
+                 drift_warn_s: float = 5.0, on_event=None, now=None):
+        self.bar_seconds = max(float(bar_seconds or 300.0), 1e-6)
+        self.max_gap_bars = max_gap_bars
+        self.drift_warn_s = drift_warn_s
+        self.on_event = on_event
+        self.now = now or time.time
+        self.last_bar_ts: dict[str, float] = {}
+        self.last_drift_warn = 0.0
+        self.stats = {"bars": 0, "gaps": 0, "max_gap_bars": 0.0,
+                      "drift_checks": 0, "drift_warnings": 0, "last_drift_s": None}
+
+    def _event(self, kind: str, msg: str) -> None:
+        if self.on_event:
+            try:
+                self.on_event(kind, msg)
+            except Exception:
+                pass
+
+    def on_bar(self, symbol: str, bar_ts: float) -> Optional[float]:
+        """Return the gap in bars when one is too large, else None."""
+        self.stats["bars"] += 1
+        prev = self.last_bar_ts.get(symbol)
+        self.last_bar_ts[symbol] = float(bar_ts)
+        if prev is None:
+            return None
+        gap = (float(bar_ts) - prev) / self.bar_seconds - 1.0
+        if gap > self.max_gap_bars:
+            self.stats["gaps"] += 1
+            self.stats["max_gap_bars"] = max(self.stats["max_gap_bars"], round(gap, 2))
+            self._event("warn", f"{symbol}: {gap:.1f}-bar gap in the feed "
+                                f"({(float(bar_ts) - prev) / 60:.1f} min without a close)")
+            return gap
+        return None
+
+    def on_tick(self, server_ts: float) -> Optional[float]:
+        """Compare venue time with local UTC. Positive means the venue is ahead.
+
+        Disabled with `drift_warn_s=0`: a synthetic tape is time-compressed on
+        purpose, so its timestamps say nothing about a venue clock.
+        """
+        if not server_ts or self.drift_warn_s <= 0:
+            return None
+        self.stats["drift_checks"] += 1
+        drift = float(server_ts) - self.now()
+        self.stats["last_drift_s"] = round(drift, 2)
+        if abs(drift) > self.drift_warn_s and self.now() - self.last_drift_warn > 300:
+            self.last_drift_warn = self.now()
+            self.stats["drift_warnings"] += 1
+            self._event("warn", f"venue clock is {drift:+.0f}s from local UTC "
+                                f"(session windows and stops use UTC)")
+            return drift
+        return None
 
 
 class FeedSupervisor:

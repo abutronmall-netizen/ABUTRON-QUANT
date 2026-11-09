@@ -7,6 +7,10 @@ instead of using fixed pip distances that break on Deriv synthetics.
 """
 from __future__ import annotations
 
+from .timeutil import tf_seconds
+
+_tf_seconds = tf_seconds   # backwards-compatible alias
+
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -151,17 +155,13 @@ def build_candidate(ctx: MarketContext, spec: SymbolSpec, cfg: StrategyProfile,
 
     cand = Candidate(
         symbol=ctx.symbol, side=side, conviction=conv, price=entry, sl=sl, tp=tp,
-        ttl_s=cfg.time_stop_bars * _tf_seconds(cfg.entry_tf), strategy=cfg.name,
+        ttl_s=cfg.time_stop_bars * tf_seconds(cfg.entry_tf), strategy=cfg.name,
         regime=ctx.regime.label.value, votes=votes,
         meta={"atr": round(atr, 6), "rr": round(rr, 3), "spread": ctx.quote.spread,
               "extension_atr": round(ext, 2), "support": breakdown.get("support"),
               "opposition": breakdown.get("opposition"), "threshold": threshold},
     )
     return cand, "CANDIDATE", diag
-
-
-def _tf_seconds(tf: str) -> int:
-    return {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}.get(tf, 300)
 
 
 @dataclass

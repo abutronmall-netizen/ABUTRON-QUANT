@@ -57,7 +57,7 @@ python3 -m apex serve --demo --record-ticks data/ticks.csv      # or a live mode
 python3 -m apex backtest --symbols R_75 --ticks data/ticks.csv
 
 # 6. tests
-python3 -m unittest discover -s tests      # 209 tests
+python3 -m unittest discover -s tests      # 247 tests
 ```
 
 ---
@@ -69,7 +69,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **209 tests pass** in ~13 s |
+| Test suite | `python3 -m unittest discover -s tests` | **247 tests pass** in ~13 s |
 | Random-walk tape (no edge exists) | `backtest --trend-strength 0.35`, 6 seeds | mean **avgR −0.004**, 3/6 seeds positive |
 | Structured tape (edge exists) | `backtest --trend-strength 2.5`, 6 seeds | mean **avgR +0.187**, **6/6 seeds positive**, median maxDD 2.9% |
 | Prop guard, daily-loss hole | `propsim --bars 8000` before/after the fix | breach rate **50% → 0%** |
@@ -105,6 +105,15 @@ remains unreachable without a genuine edge — exactly the honest state of affai
 | Tick capture + tick-level replay | **Working** | `--record-ticks`, `backtest --ticks` |
 | Partial fills and pending orders | **Working** | `Ack.state`, `tests/test_mt5_live.py` |
 | Operator-token auth + traversal-safe static serving | **Working** | `tests/test_api.py` |
+| Alerting: webhook/SMTP, throttled per kind, never blocks trading | **Working** | `apex/alerts.py`; `tests/test_ops.py` |
+| Out-of-process watchdog: stale heartbeat → alert → flatten request | **Working** | `apex/watchdog.py`, `apex watchdog`; `deploy/apex-watchdog.service` |
+| Pending orders tracked, adopted on late fill, cancelled on expiry | **Working** | `apex/execution/pending.py`; `tests/test_ops.py` |
+| `apex verify`: the demo checklist as a pass/fail command | **Working** | `apex/verify.py`; `tests/test_ops.py` |
+| Partial closes / scale-outs (all-or-nothing before) | **Working** (Deriv refuses, by design) | `engine.close_position(volume=)`, `core.scale_out_r` |
+| Aggregate heat caps in money (portfolio and correlated group) | **Working** | `risk.py` `max_heat_pct`, `max_group_heat_pct` |
+| Per-instrument session windows | **Working** | `risk.py` `session_hours` |
+| Bounded journal: retention + vacuum | **Working** | `apex prune`, `--db-retention-days` |
+| Bar-gap and venue clock-drift detection | **Working** | `FeedMonitor` in `apex/live.py` |
 
 **Unverified means unverified.** No order has been transmitted to Deriv or FP Markets from this
 repository. Protocol and adapter logic are tested against fakes; a demo account must confirm
@@ -215,6 +224,9 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex news --file cal.json` | inspect an economic calendar and the blackout windows it implies |
 | `apex report --run runs/bt_x` | summarise a run |
 | `apex ai --test` | check the optional local LLM reviewer (wired into entries, advisory by default) |
+| `apex verify --run runs/live` | grade a journal against the demo checklist; `--live` judges slippage strictly |
+| `apex watchdog` | separate process: watch the heartbeat, alert, flatten if the engine dies |
+| `apex prune --db runs/live/apex.db --days 14` | bound journal growth (keeps trades) |
 
 `--prop none` disables the guard; `--prop config/my_firm.json` loads your own terms.
 
@@ -232,12 +244,16 @@ apex/
   agents.py          trend / mean-reversion / breakout / momentum / vol filter
   portfolio.py       conviction, arbitration, ReflectionMemory
   strategy.py        entries, brackets, trailing, time stops
-  risk.py            sizing and capital protection
+  risk.py            sizing, heat caps, sessions, capital protection
   prop.py            prop-firm rule guard, pacing, phases
   news.py            economic calendar → prop blackout windows
-  store.py           sqlite journal + attribution metrics + durable state
+  store.py           sqlite journal + attribution metrics + durable state + retention
   backtest.py        event-driven runner (same engine)
-  live.py            feeds → engine runner, boot sync, socket supervision
+  live.py            feeds → engine runner, boot sync, socket supervision, feed health
+  alerts.py          webhook/SMTP notifier (throttled, never blocks)
+  watchdog.py        heartbeat monitor; flatten request the engine honours
+  verify.py          the deployment checklist, mechanically
+  timeutil.py        the one definition of a timeframe
   data/              deriv (ws), mt5, synthetic/replay feed, ws client
   execution/         port interface, sim broker, deriv, mt5, router
   research/          sweep + prop pass-rate simulation
@@ -247,14 +263,15 @@ apex/
 docs/                architecture, audit response, prop playbook, deployment, research
 .github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
-tests/               166 unit + integration tests
+tests/               247 unit + integration tests
 ```
 
 ---
 
 ## Running it unattended
 
-Four things decide whether a desk can be left alone overnight. All four are implemented and tested.
+These are the restart and supervision paths. Six things decide whether a desk can be left
+alone overnight; all six are implemented and tested.
 
 | Risk | Behaviour |
 | --- | --- |
@@ -270,6 +287,37 @@ python3 -m apex serve --mode deriv --config config/deriv_prop.json \
 
 Deployment artefacts: `Dockerfile` (dependency-free, non-root, healthcheck) and
 `deploy/apex.service` (systemd, `Restart=always`, state restored from the journal).
+
+---
+
+## When nobody is watching
+
+Alerts, the watchdog and `apex verify` exist because the failures that end desks
+are silent ones.
+
+```bash
+# the engine writes a heartbeat every second; point a second process at it
+python3 -m apex serve --mode deriv --config config/deriv_prop.json \
+  --token "$APEX_DASHBOARD_TOKEN" --alert-webhook "$APEX_ALERT_WEBHOOK"
+
+python3 -m apex watchdog --heartbeat runs/live/heartbeat.json \
+  --webhook "$APEX_ALERT_WEBHOOK"          # alert-only
+python3 -m apex watchdog --heartbeat runs/live/heartbeat.json --mode mt5 --live
+                                          # may also flatten at the broker
+
+# grade a demo week before risking anything
+python3 -m apex verify --run runs/live --live --json
+```
+
+| Situation | What happens |
+| --- | --- |
+| Risk halt, prop breach, kill switch, reconciliation drift, feed death, reconnect | written to the journal **and** pushed to your webhook/mail, throttled per kind |
+| Engine process dies with positions open | watchdog alerts after 30 s, writes a flatten request; the next boot flattens instead of adopting |
+| Broker accepts an order but does not fill it | tracked with its own expiry, polled at the venue, adopted on late fill, cancelled when stale |
+| Aggregate open risk creeps up | `max_heat_pct` / `max_group_heat_pct` refuse the entry; position counts alone cannot see this |
+| A bar or two never arrives | `FeedMonitor` warns once per episode with the gap size in bars |
+| Venue clock is not UTC | warned with the offset; stops and session windows are UTC-based |
+| The journal grows without limit | `apex prune` / `--db-retention-days` keep trades, drop per-second equity rows, vacuum |
 
 ---
 
@@ -291,7 +339,9 @@ model is reachable.
 * **No prop-pass guarantee.** `propsim` reports a pass *rate* under variation because a single
   passing backtest is noise.
 * **No live validation yet.** Deriv and MT5 adapters are implemented to spec and tested against
-  fakes. Real fills, real rejections and real contract P&L must be confirmed on demo accounts.
+  fakes. Real fills, real rejections and real contract P&L must be confirmed on demo accounts —
+  `apex verify --live` is the command that grades that week, but it reads a journal; it cannot
+  certify slippage you have not experienced.
 * **No HFT.** This is minute-scale discretionary-quality automation, not colocated market making.
 
 Before risking money: read [`docs/LIVE_DEPLOYMENT.md`](docs/LIVE_DEPLOYMENT.md) and calibrate the

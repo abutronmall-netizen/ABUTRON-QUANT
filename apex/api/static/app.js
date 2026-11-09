@@ -60,6 +60,11 @@
     if (safe.persist_state === false) bits.push("no-persist");
     if (s.reconcile_diffs) bits.push(`${s.reconcile_diffs} diff`);
     if (safe.ticks_recorded) bits.push(`ticks:${safe.ticks_recorded}`);
+    if (s.heat_pct !== undefined && s.heat_pct !== null) bits.push(`heat:${s.heat_pct}%`);
+    if (s.pending && s.pending.length) bits.push(`${s.pending.length} pending`);
+    const feed = s.feed_health || {};
+    if (feed.gaps) bits.push(`${feed.gaps} feed gap${feed.gaps > 1 ? "s" : ""}`);
+    if (feed.drift_warnings) bits.push(`clock drift`);
     const spy = $("safetyPill");
     if (spy) {
       const news = s.news;

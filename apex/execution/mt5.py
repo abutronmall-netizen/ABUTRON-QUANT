@@ -177,15 +177,103 @@ class MT5Broker:
                    broker="mt5", account=self.account_id, raw={"deal": result.deal})
 
     # ------------------------------------------------------------------ #
-    def close(self, position: Position, reason: str, price: Optional[float] = None) -> Ack:
+    def order_status(self, order_id: str) -> Optional[dict]:
+        """Resolve an order the server accepted before dealing (retcode PLACED)."""
+        try:
+            ticket = int(str(order_id))
+        except (TypeError, ValueError):
+            return None
+        if self.unavailable():
+            return None
+        mt5 = self.conn.mt5
+        # 1) it became a position -> filled
+        try:
+            rows = mt5.positions_get(ticket=ticket) or []
+        except Exception:
+            rows = []
+        for p in rows:
+            return {"state": "filled", "position_id": str(getattr(p, "ticket", ticket)),
+                    "filled_lots": float(getattr(p, "volume", 0.0) or 0.0),
+                    "filled_price": float(getattr(p, "price_open", 0.0) or 0.0), "ticket": ticket}
+        # 2) still an open/pending order -> pending
+        try:
+            live = mt5.orders_get(ticket=ticket) or []
+        except Exception:
+            live = []
+        if live:
+            return {"state": "pending", "ticket": ticket}
+        # 3) history verdict
+        try:
+            hist = mt5.history_orders_get(ticket=ticket) or []
+        except Exception:
+            hist = []
+        for o in hist:
+            vol_done = float(getattr(o, "volume_initial", 0.0) or 0.0)
+            state = getattr(o, "state", None)
+            filled_state = getattr(mt5, "ORDER_STATE_FILLED", 4)
+            partial_state = getattr(mt5, "ORDER_STATE_PARTIAL", 3)
+            cancelled_state = getattr(mt5, "ORDER_STATE_CANCELED", 2)
+            if state == filled_state:
+                return {"state": "filled", "filled_lots": vol_done,
+                        "filled_price": float(getattr(o, "price_open", 0.0) or 0.0),
+                        "ticket": ticket}
+            if state == partial_state:
+                return {"state": "filled",
+                        "filled_lots": float(getattr(o, "volume_current", 0.0) or 0.0),
+                        "filled_price": float(getattr(o, "price_open", 0.0) or 0.0),
+                        "ticket": ticket, "partial": True}
+            if state == cancelled_state:
+                return {"state": "cancelled", "ticket": ticket}
+        return {"state": "unknown", "ticket": ticket}
+
+    def cancel(self, order_id: str) -> Ack:
+        """Remove a still-pending order. Safe to call on anything already gone."""
         ts = time.time()
+        client_id = new_client_id("cancel")
+        if self.unavailable():
+            return Ack(ok=True, client_id=client_id, ts=ts, order_id=str(order_id),
+                       broker="mt5", account=self.account_id, raw={"dry_run": True})
+        try:
+            ticket = int(str(order_id))
+        except (TypeError, ValueError):
+            return Ack(ok=False, client_id=client_id, ts=ts, reason="bad order id",
+                       broker="mt5", account=self.account_id)
+        mt5 = self.conn.mt5
+        try:
+            result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": ticket})
+        except Exception as exc:
+            return Ack(ok=False, client_id=client_id, ts=ts, reason=f"cancel error: {exc}",
+                       broker="mt5", account=self.account_id, retryable=True)
+        if result is None:
+            return Ack(ok=False, client_id=client_id, ts=ts, reason="order_send None",
+                       broker="mt5", account=self.account_id, retryable=True)
+        ok = result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL) \
+            if hasattr(mt5, "TRADE_RETCODE_DONE_PARTIAL") else result.retcode == mt5.TRADE_RETCODE_DONE
+        return Ack(ok=ok, client_id=client_id, ts=ts, order_id=str(ticket),
+                   reason="" if ok else f"retcode {result.retcode}",
+                   broker="mt5", account=self.account_id, raw={"retcode": result.retcode})
+
+    # ------------------------------------------------------------------ #
+    def close(self, position: Position, reason: str, price: Optional[float] = None,
+              volume: Optional[float] = None) -> Ack:
+        ts = time.time()
+        lots = position.lots if volume is None else min(float(volume), position.lots)
+        if lots <= 0:
+            return Ack(ok=False, client_id=new_client_id("close"), ts=ts, reason="zero volume",
+                       broker="mt5", account=self.account_id)
+        partial = lots < position.lots - 1e-9
         if self.unavailable():
             q = self.quote(position.symbol)
             px = position.entry if q is None else (q.bid if position.side is Side.BUY else q.ask)
-            self._dry_positions.pop(position.id, None)
+            book = self._dry_positions.get(position.id)
+            if book is not None and partial:
+                book.lots = round(book.lots - lots, 8)
+            else:
+                self._dry_positions.pop(position.id, None)
             return Ack(ok=True, client_id=new_client_id("close"), ts=ts,
-                       order_id=f"CLS-{position.id}", filled_price=px, lots=position.lots,
-                       broker="mt5", account=self.account_id, raw={"dry_run": True, "reason": reason})
+                       order_id=f"CLS-{position.id}", filled_price=px, lots=lots,
+                       broker="mt5", account=self.account_id,
+                       raw={"dry_run": True, "reason": reason, "partial": partial})
         mt5 = self.conn.mt5
         q = self.conn.tick(position.symbol)
         if q is None and price is None:
@@ -197,7 +285,7 @@ class MT5Broker:
             "action": mt5.TRADE_ACTION_DEAL,
             "position": int(position.contract_id or position.id),
             "symbol": position.symbol,
-            "volume": float(position.lots),
+            "volume": float(lots),
             "type": mt5.ORDER_TYPE_SELL if position.side is Side.BUY else mt5.ORDER_TYPE_BUY,
             "price": float(price),
             "deviation": self.cfg.deviation,

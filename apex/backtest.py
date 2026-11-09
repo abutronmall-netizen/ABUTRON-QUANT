@@ -7,6 +7,8 @@ would actually trade, including spread, slippage and commission.
 """
 from __future__ import annotations
 
+from .timeutil import tf_seconds
+
 import csv
 import json
 import zlib
@@ -115,21 +117,17 @@ def _series_for(symbol: str, req: BacktestRequest) -> list[Bar]:
     base = BASE_PRICES.get(symbol, 1000.0)
     vol = VOL_BPS.get(symbol, 6.0) * req.vol_scale
     if symbol.startswith(("BOOM", "CRASH")):
-        cfg = SyntheticConfig(base_price=base, tf_seconds=_tf_seconds(req.tf), vol_bps=vol,
+        cfg = SyntheticConfig(base_price=base, tf_seconds=tf_seconds(req.tf), vol_bps=vol,
                               seed=req.seed * 7919 + zlib.crc32(symbol.encode()) % 100000,
                               jump_probability=0.01, jump_bps=250.0,
                               trend_strength=req.trend_strength)
-        start = req.start_ts or (int(time.time()) // _tf_seconds(req.tf)) * _tf_seconds(req.tf) - req.bars * _tf_seconds(req.tf)
+        start = req.start_ts or (int(time.time()) // tf_seconds(req.tf)) * tf_seconds(req.tf) - req.bars * tf_seconds(req.tf)
         return SyntheticFeed(symbol, cfg, start_ts=start).bars(req.bars)
-    start = req.start_ts or (int(time.time()) // _tf_seconds(req.tf)) * _tf_seconds(req.tf) - req.bars * _tf_seconds(req.tf)
-    cfg = SyntheticConfig(base_price=base, tf_seconds=_tf_seconds(req.tf), vol_bps=vol,
+    start = req.start_ts or (int(time.time()) // tf_seconds(req.tf)) * tf_seconds(req.tf) - req.bars * tf_seconds(req.tf)
+    cfg = SyntheticConfig(base_price=base, tf_seconds=tf_seconds(req.tf), vol_bps=vol,
                           seed=req.seed * 7919 + zlib.crc32(symbol.encode()) % 100000,
                           trend_strength=req.trend_strength)
     return SyntheticFeed(symbol, cfg, start_ts=start).bars(req.bars)
-
-
-def _tf_seconds(tf: str) -> int:
-    return {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}.get(tf, 300)
 
 
 def run_backtest(req: BacktestRequest) -> BacktestResult:
@@ -203,7 +201,7 @@ def run_backtest(req: BacktestRequest) -> BacktestResult:
         spread = spec.typical_spread or bar.close * (req.spread_bps or 0.5) / 10_000.0
         half = spread / 2.0
         sim.set_time(bar.ts)
-        sim.set_quote(Quote(sym, bar.ts + _tf_seconds(req.tf), bar.close - half, bar.close + half))
+        sim.set_quote(Quote(sym, bar.ts + tf_seconds(req.tf), bar.close - half, bar.close + half))
         # Order matters for fill realism:
         #  1. ingest the bar (indicators, regime, new entries at the close);
         #  2. resolve stops/targets that were touched *inside* the bar at their
@@ -281,7 +279,7 @@ def _run_tick_replay(req: BacktestRequest, engine, brokers: dict) -> None:
         raise ValueError(f"cannot read ticks at {req.tick_path}: {exc}") from exc
     if not rows:
         raise ValueError(f"no ticks found in {req.tick_path}")
-    feed = TickReplayFeed(rows, _tf_seconds(req.tf))
+    feed = TickReplayFeed(rows, tf_seconds(req.tf))
     last_sym = None
     for quote, bar in feed:
         st = engine.states.get(quote.symbol)

@@ -49,7 +49,7 @@ class BrokerRouter:
         self._acks: dict[str, Ack] = {}
         self.stats = {"submitted": 0, "filled": 0, "rejected": 0, "retried": 0,
                       "closed": 0, "modifications": 0, "duplicates": 0, "errors": 0,
-                      "partial": 0, "pending": 0}
+                      "partial": 0, "pending": 0, "cancels": 0}
 
     # ------------------------------------------------------------------ #
     def route_for(self, symbol: str, broker: Optional[str] = None,
@@ -134,23 +134,66 @@ class BrokerRouter:
         self._record(order, ack, route)
         return ack
 
-    def close(self, position: Position, reason: str, price: Optional[float] = None) -> Ack:
+    def close(self, position: Position, reason: str, price: Optional[float] = None,
+              volume: Optional[float] = None) -> Ack:
         route = self.route_by_account(position.account) or self.route_for(position.symbol)
         if route is None:
             return Ack(ok=False, client_id=f"close-{position.id}", ts=time.time(),
                        reason="no route for close")
         try:
             try:
-                ack = route.port.close(position, reason, price)
-            except TypeError:                     # adapter without explicit price
-                ack = route.port.close(position, reason)
+                ack = route.port.close(position, reason, price, volume=volume)
+            except TypeError:                     # adapter without volume support
+                if volume is not None and volume < position.lots - 1e-9:
+                    return Ack(ok=False, client_id=f"close-{position.id}", ts=time.time(),
+                               reason="adapter does not support partial closes")
+                try:
+                    ack = route.port.close(position, reason, price)
+                except TypeError:                 # adapter without explicit price
+                    ack = route.port.close(position, reason)
         except Exception as exc:
             ack = Ack(ok=False, client_id=f"close-{position.id}", ts=time.time(),
                       reason=f"close error: {exc}", retryable=True)
             self.stats["errors"] += 1
         if ack.ok:
             self.stats["closed"] += 1
-        self._event("close", f"{position.symbol} {position.lots} lots -> {reason} @ {ack.filled_price}")
+            if ack.lots and ack.lots < position.lots - 1e-9:
+                self.stats["partial"] = self.stats.get("partial", 0) + 1
+        self._event("close", f"{position.symbol} {ack.lots or position.lots} lots -> {reason} "
+                             f"@ {ack.filled_price}")
+        return ack
+
+    def order_status(self, broker: str, account: str, order_id: str) -> Optional[dict]:
+        """Ask the venue what happened to an order it accepted but did not fill."""
+        route = self.route_by_account(account) or self.route_for("", broker)
+        if route is None:
+            return None
+        fn = getattr(route.port, "order_status", None)
+        if fn is None:
+            return None
+        try:
+            return fn(order_id)
+        except Exception as exc:
+            self.stats["errors"] += 1
+            self._event("error", f"order_status failed for {order_id}: {exc}")
+            return None
+
+    def cancel(self, broker: str, account: str, order_id: str) -> Ack:
+        route = self.route_by_account(account) or self.route_for("", broker)
+        if route is None:
+            return Ack(ok=False, client_id=f"cancel-{order_id}", ts=time.time(),
+                       reason="no route for cancel")
+        fn = getattr(route.port, "cancel", None)
+        if fn is None:
+            return Ack(ok=False, client_id=f"cancel-{order_id}", ts=time.time(),
+                       reason="adapter cannot cancel orders")
+        self.stats["cancels"] = self.stats.get("cancels", 0) + 1
+        try:
+            ack = fn(order_id)
+        except Exception as exc:
+            return Ack(ok=False, client_id=f"cancel-{order_id}", ts=time.time(),
+                       reason=f"cancel error: {exc}")
+        self._event("order", f"CANCEL {order_id}: {'ok' if ack.ok else ack.reason}")
         return ack
 
     def modify(self, position: Position, sl: Optional[float], tp: Optional[float]) -> Ack:
@@ -181,12 +224,20 @@ class BrokerRouter:
     def reconcile(self, internal: list[Position]) -> list[dict]:
         """Compare engine bookkeeping against broker truth. Non-empty == alert."""
         diffs: list[dict] = []
-        broker_pos = {(p.broker, p.symbol, p.id): p for p in self.positions()}
-        internal_keys = {(p.broker, p.symbol, p.id) for p in internal}
+        # Match on (symbol, ticket), not on the broker *label*. The engine labels a
+        # routed position with the route name ("deriv") while a simulated port
+        # reports its own ("sim"); keying on the label produced a discrepancy on
+        # every paper position, which is how desks learn to ignore reconciliation.
+        broker_pos = {(p.symbol, p.id): p for p in self.positions()}
+        internal_keys = {(p.symbol, p.id) for p in internal}
         for p in internal:
-            if (p.broker, p.symbol, p.id) not in broker_pos:
+            other = broker_pos.get((p.symbol, p.id))
+            if other is None:
                 diffs.append({"type": "missing_at_broker", "symbol": p.symbol,
                               "id": p.id, "lots": p.lots})
+            elif abs(float(other.lots) - float(p.lots)) > 1e-6:
+                diffs.append({"type": "lots_mismatch", "symbol": p.symbol, "id": p.id,
+                              "lots": p.lots, "broker_lots": other.lots})
         for key, p in broker_pos.items():
             if key not in internal_keys:
                 diffs.append({"type": "unknown_at_engine", "symbol": p.symbol,

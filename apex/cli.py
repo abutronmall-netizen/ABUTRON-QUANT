@@ -28,6 +28,9 @@ from .prop import PROFILES, get_profile, plan_for
 from .risk import RiskConfig
 from .store import Store
 from .strategy import StrategyProfile
+from .timeutil import tf_seconds
+
+_tf_seconds = tf_seconds   # backwards-compatible alias
 
 
 def _prop_arg(value):
@@ -37,10 +40,6 @@ def _prop_arg(value):
     if str(value).strip().lower() in ("none", "off", "no"):
         return None
     return value
-
-
-def _tf_seconds(tf: str) -> int:
-    return {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}.get(tf, 300)
 
 
 def _split(s: str) -> list[str]:
@@ -82,7 +81,7 @@ def cmd_serve(args) -> int:
         live_orders=bool(args.live),
         warmup_bars=cfg["warmup_bars"],
         seed=args.seed or cfg["seed"],
-        preload_bars=args.preload, bar_seconds_override=args.speed,
+        preload_bars=args.preload, bar_seconds=args.speed,
         trend_strength=args.trend_strength or cfg["trend_strength"],
         risk=risk_from(cfg),
         boot_policy=(args.boot_policy if args.boot_policy != "adopt"
@@ -94,6 +93,14 @@ def cmd_serve(args) -> int:
         ai_mode=(args.ai if args.ai in ("advisory", "veto") else cfg.get("ai", {}).get("mode", "advisory")),
         ai_url=cfg.get("ai", {}).get("url", "http://127.0.0.1:11434"),
         ai_model=cfg.get("ai", {}).get("model", "qwen2.5:1.5b"),
+        heartbeat_path=(args.heartbeat if args.heartbeat is not None
+                        else (cfg.get("heartbeat_path") or
+                              (os.path.join(os.path.dirname(cfg["store_path"] or "runs/live/x"),
+                                            "heartbeat.json")))),
+        db_retention_days=(args.db_retention_days if args.db_retention_days is not None
+                           else cfg.get("db_retention_days", 0.0)),
+        alerts={**(cfg.get("alerts") or {}),
+                **({"webhook_url": args.alert_webhook} if args.alert_webhook else {})},
     )
     if mode != "paper" and not args.live:
         print("[!] live-orders OFF: the engine will simulate fills and will not transmit orders.")
@@ -330,7 +337,7 @@ def cmd_fetch(args) -> int:
         bars = conn.rates(args.symbol, args.tf, args.bars)
         print(f"[fetch] mt5 offset {conn.offset_hours}h (server -> UTC)")
     else:
-        bars = fetch_candles_sync(args.symbol, _tf_seconds(args.tf), args.bars,
+        bars = fetch_candles_sync(args.symbol, tf_seconds(args.tf), args.bars,
                                   app_id=creds["deriv_app_id"], token=creds["deriv_token"])
     bars_to_csv(bars, out)
     span = (bars[-1].ts - bars[0].ts) / 86400 if bars else 0
@@ -388,6 +395,88 @@ def cmd_ai(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_verify(args) -> int:
+    from .verify import VerifyConfig, render_verify, verify_run
+    cfg = VerifyConfig(db_path=args.db or os.path.join(args.run, "apex.db"),
+                       heartbeat_path=args.heartbeat, live=bool(args.live),
+                       stale_after_s=args.stale,
+                       since_s=(time.time() - args.days * 86400) if args.days else None,
+                       slippage_bps_limit=args.slippage_bps)
+    report = verify_run(cfg)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(render_verify(report))
+    if not report["ok"]:
+        return 1
+    return 1 if (args.strict and report["warnings"]) else 0
+
+
+def cmd_prune(args) -> int:
+    db = args.db or os.path.join(args.run, "apex.db")
+    if not os.path.exists(db):
+        print(f"no journal at {db}")
+        return 1
+    store = Store(db)
+    try:
+        before = store.size_bytes()
+        out = store.prune(args.days, keep_trades=not args.drop_trades)
+        vac = store.vacuum() if not args.no_vacuum else {"reclaimed": 0}
+        after = store.size_bytes()
+        print(f"{db}: {before/1e6:.2f} MB -> {after/1e6:.2f} MB "
+              f"(reclaimed {max(0, before - after)/1e6:.2f} MB)")
+        print(f"  pruned {out}")
+        if not args.no_vacuum and not vac.get("ok", True):
+            print(f"  vacuum failed: {vac.get('error')}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_watchdog(args) -> int:
+    from .watchdog import Watchdog, WatchdogConfig, broker_flattener
+    raw = load_config(args.config)
+    creds = broker_credentials(raw)
+    live_cfg = LiveConfig(
+        mode=args.mode if args.mode != "none" else (raw.get("mode") or "paper"),
+        symbols_by_broker=raw.get("symbols_by_broker") or {},
+        live_orders=bool(args.live),
+        deriv_app_id=creds["deriv_app_id"], deriv_token=creds["deriv_token"],
+        mt5_login=creds["mt5_login"], mt5_password=creds["mt5_password"],
+        mt5_server=creds["mt5_server"], mt5_path=creds["mt5_path"],
+    )
+    alerts = dict(raw.get("alerts") or {})
+    if args.webhook:
+        alerts["webhook_url"] = args.webhook
+    flattener = None
+    if not args.no_flatten and args.live and args.mode in ("deriv", "mt5"):
+        flattener = broker_flattener(live_cfg)
+        if flattener is None:
+            print("watchdog: could not connect for flattening; alert-only")
+    elif not args.no_flatten and args.mode in ("deriv", "mt5") and not args.live:
+        print("watchdog: --live not set, so flattening is disabled (alert-only)")
+    store = Store(args.db or os.path.join(args.run, "apex.db"))
+    wd = Watchdog(WatchdogConfig(heartbeat_path=args.heartbeat,
+                                 stale_after_s=args.stale,
+                                 check_interval_s=args.interval,
+                                 flatten_on_stale=not args.no_flatten,
+                                 alerts=alerts),
+                  store=store, flattener=flattener)
+    try:
+        if args.once:
+            out = wd.check()
+            print(json.dumps(out, indent=2, default=str))
+            return 0 if not out["stale"] else 2
+        print(f"watchdog: watching {args.heartbeat} every {args.interval:g}s "
+              f"(stale > {args.stale:g}s, flatten={'off' if args.no_flatten else 'on'})")
+        wd.run()
+    except KeyboardInterrupt:
+        print("watchdog: stopped")
+    finally:
+        store.close()
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="apex", description="ABUTRON QUANT scalping desk")
@@ -432,6 +521,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="do not restore risk/prop state from the journal on restart")
     sp.add_argument("--ai", default=None, choices=["off", "advisory", "veto"],
                     help="optional local LLM review of sized entries (default: config)")
+    sp.add_argument("--heartbeat", default=None,
+                    help="write a heartbeat file here (default: next to the journal)")
+    sp.add_argument("--alert-webhook", default=None, help="POST alerts to this URL")
+    sp.add_argument("--db-retention-days", type=float, default=None,
+                    help="prune equity/signal/event rows older than N days at startup")
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("backtest", help="event-driven backtest with the production engine")
@@ -493,6 +587,42 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model", default="qwen2.5:1.5b")
     sp.add_argument("--test", action="store_true")
     sp.set_defaults(func=cmd_ai)
+
+    sp = sub.add_parser("prune", help="bound journal growth (retention + vacuum)")
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None)
+    sp.add_argument("--days", type=float, default=14.0, help="retain this many days")
+    sp.add_argument("--drop-trades", action="store_true", help="also delete old trades")
+    sp.add_argument("--no-vacuum", action="store_true")
+    sp.set_defaults(func=cmd_prune)
+
+    sp = sub.add_parser("verify", help="automate the demo-validation checklist from a journal")
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None, help="journal path (default: <run>/apex.db)")
+    sp.add_argument("--heartbeat", default=None, help="heartbeat file to check for freshness")
+    sp.add_argument("--days", type=float, default=0.0, help="only inspect the last N days")
+    sp.add_argument("--live", action="store_true",
+                    help="judge slippage/P&L strictly (real fills, not paper)")
+    sp.add_argument("--slippage-bps", type=float, default=3.0)
+    sp.add_argument("--stale", type=float, default=30.0)
+    sp.add_argument("--strict", action="store_true", help="fail on warnings too")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_verify)
+
+    sp = sub.add_parser("watchdog", help="watch the engine heartbeat, alert and flatten if it dies")
+    sp.add_argument("--run", default="runs/live")
+    sp.add_argument("--db", default=None)
+    sp.add_argument("--heartbeat", default="runs/live/heartbeat.json")
+    sp.add_argument("--mode", default="none", choices=["none", "deriv", "mt5", "sim"])
+    sp.add_argument("--config", default=None, help="config supplying broker credentials")
+    sp.add_argument("--stale", type=float, default=30.0)
+    sp.add_argument("--interval", type=float, default=5.0)
+    sp.add_argument("--webhook", default=None, help="alert webhook URL")
+    sp.add_argument("--live", action="store_true",
+                    help="allow the watchdog to close positions at the broker")
+    sp.add_argument("--no-flatten", action="store_true", help="alert only, never touch the broker")
+    sp.add_argument("--once", action="store_true", help="single check, exit 2 if stale")
+    sp.set_defaults(func=cmd_watchdog)
     return p
 
 

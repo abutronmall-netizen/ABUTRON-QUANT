@@ -1,4 +1,4 @@
-.PHONY: help demo test test-live doctor backtest propsim sweep news ticks docker lint clean
+.PHONY: help demo test test-live doctor verify watchdog backtest propsim sweep news ticks docker lint clean
 
 help:
 	@echo "ABUTRON QUANT"
@@ -11,6 +11,8 @@ help:
 	@echo "  make test-live # restart / socket / API safety tests"
 	@echo "  make news      # inspect the sample calendar windows"
 	@echo "  make ticks     # replay recorded ticks (needs data/ticks.csv)"
+	@echo "  make verify    # run the demo-validation checklist over a journal"
+	@echo "  make watchdog  # watch the heartbeat and alert/flatten if the engine dies"
 	@echo "  make docker    # build the container image"
 	@echo "  make clean     # remove runtime artifacts"
 
@@ -34,6 +36,12 @@ docker:
 
 doctor:
 	python3 -m apex doctor
+
+verify:
+	python3 -m apex verify --run runs/live
+
+watchdog:
+	python3 -m apex watchdog --heartbeat runs/live/heartbeat.json --once
 
 backtest:
 	python3 -m apex backtest --symbols R_25,R_50,R_75 --bars 4000 --prop abutron_inhouse --out runs/bt

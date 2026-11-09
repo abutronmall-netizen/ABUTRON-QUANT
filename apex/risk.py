@@ -50,6 +50,14 @@ class RiskConfig:
     trade_on_weekends: bool = False
     kill_switch: bool = False
     max_correlated_positions: int = 2
+    # Aggregate risk, in money. Position counts say nothing about whether four
+    # open trades each risk 0.5% or 4%. 0 disables the cap.
+    max_heat_pct: float = 0.0           # total open risk as % of equity
+    max_group_heat_pct: float = 0.0     # per correlated group (needs groups=)
+    # Per-instrument trading windows in UTC hours. Keys may be a symbol
+    # ("XAUUSD") or a correlation group ("metals"). Falls back to the global
+    # session_start_utc/session_end_utc pair.
+    session_hours: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -183,9 +191,32 @@ class RiskEngine:
                                      "equity": round(acct.equity, 2)})
 
     # ------------------------------------------------------------------ #
+    def session_window(self, symbol: str,
+                       groups: Optional[dict[str, str]] = None) -> tuple[int, int]:
+        """Resolve the trading window: symbol override, then group, then global."""
+        cfg = self.cfg
+        if cfg.session_hours:
+            for key in (symbol, (groups or {}).get(symbol)):
+                if key and key in cfg.session_hours:
+                    lo, hi = cfg.session_hours[key]
+                    return int(lo), int(hi)
+        return int(cfg.session_start_utc), int(cfg.session_end_utc)
+
+    @staticmethod
+    def open_risk_money(positions: list[Position]) -> float:
+        """Money at risk if every open stop filled, as last recorded at entry."""
+        total = 0.0
+        for p in positions:
+            try:
+                total += float(p.meta.get("risk_money") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return total
+
     def evaluate(self, cand: Candidate, spec: SymbolSpec, acct: AccountState,
                  positions: list[Position], now: float,
-                 risk_pct: Optional[float] = None) -> Decision:
+                 risk_pct: Optional[float] = None,
+                 groups: Optional[dict[str, str]] = None) -> Decision:
         st, cfg = self.state, self.cfg
         if cfg.kill_switch:
             return self._reject("KILL_SWITCH", "kill switch engaged")
@@ -194,9 +225,10 @@ class RiskEngine:
         if now < st.cooldown_until:
             return self._reject("COOLDOWN", f"cooldown for {st.cooldown_until - now:.0f}s")
         hour = int((now % 86400) // 3600)
-        if not (cfg.session_start_utc <= hour < cfg.session_end_utc):
+        start_h, end_h = self.session_window(cand.symbol, groups)
+        if not (start_h <= hour < end_h):
             return self._reject("SESSION_CLOSED",
-                                f"outside session {cfg.session_start_utc}-{cfg.session_end_utc} UTC")
+                                f"outside session {start_h}-{end_h} UTC for {cand.symbol}")
         if not cfg.trade_on_weekends and time.gmtime(now).tm_wday >= 5:
             return self._reject("WEEKEND", "weekend trading disabled")
         if st.day_trades >= cfg.max_trades_per_day:
@@ -227,6 +259,36 @@ class RiskEngine:
         if not sized.allowed:
             self._reject(sized.code, sized.reason)
             return sized
+
+        # aggregate heat, in money: the count caps above cannot see this
+        equity = max(acct.equity, 1e-9)
+        actual_risk = float(sized.detail.get("risk_money") or 0.0)
+        if cfg.max_heat_pct > 0 and positions:
+            heat = (self.open_risk_money(positions) + actual_risk) / equity * 100.0
+            if heat > cfg.max_heat_pct:
+                self._reject("PORTFOLIO_HEAT",
+                             f"heat {heat:.2f}% > {cfg.max_heat_pct:.2f}%")
+                return Decision.block(
+                    "PORTFOLIO_HEAT",
+                    f"aggregate open risk would be {heat:.2f}% of equity "
+                    f"(cap {cfg.max_heat_pct:.2f}%)",
+                    {"heat_pct": round(heat, 3), "cap_pct": cfg.max_heat_pct,
+                     "new_risk": round(actual_risk, 2)})
+        if cfg.max_group_heat_pct > 0 and positions and groups:
+            mine = groups.get(cand.symbol)
+            if mine:
+                same = [p for p in positions if groups.get(p.symbol) == mine]
+                gheat = (self.open_risk_money(same) + actual_risk) / equity * 100.0
+                if gheat > cfg.max_group_heat_pct:
+                    self._reject("GROUP_HEAT",
+                                 f"group {mine} heat {gheat:.2f}% > "
+                                 f"{cfg.max_group_heat_pct:.2f}%")
+                    return Decision.block(
+                        "GROUP_HEAT",
+                        f"group '{mine}' risk would be {gheat:.2f}% of equity "
+                        f"(cap {cfg.max_group_heat_pct:.2f}%)",
+                        {"group": mine, "heat_pct": round(gheat, 3),
+                         "cap_pct": cfg.max_group_heat_pct})
         # register entry
         st.day_trades += 1
         return sized

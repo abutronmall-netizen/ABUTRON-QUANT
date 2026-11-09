@@ -159,21 +159,32 @@ class SimBroker:
         return ack
 
     # ------------------------------------------------------------------ #
-    def close(self, position: Position, reason: str, price: Optional[float] = None) -> Ack:
+    def close(self, position: Position, reason: str, price: Optional[float] = None,
+              volume: Optional[float] = None) -> Ack:
         ts = self._ts()
         spec = self.spec(position.symbol)
         px = price if price is not None else self._price(position.symbol, position.side.flip(), entry=False)
         if px is None:
             return Ack(ok=False, client_id=new_client_id("close"), ts=ts, reason="no quote",
                        broker="sim", account=self.account_id, retryable=True)
-        pnl = (px - position.entry) * position.side.sign * position.lots * spec.value_per_point_per_lot
-        commission = position.lots * spec.commission_per_lot
+        lots = position.lots if volume is None else min(float(volume), position.lots)
+        if lots <= 0:
+            return Ack(ok=False, client_id=new_client_id("close"), ts=ts, reason="zero volume",
+                       broker="sim", account=self.account_id)
+        pnl = (px - position.entry) * position.side.sign * lots * spec.value_per_point_per_lot
+        commission = lots * spec.commission_per_lot
         self.balance += pnl - commission
-        self._positions.pop(position.id, None)
+        book = self._positions.get(position.id)
+        partial = lots < position.lots - 1e-9
+        if book is not None and partial:
+            book.lots = round(book.lots - lots, 8)
+        else:
+            self._positions.pop(position.id, None)
         ack = Ack(ok=True, client_id=new_client_id("close"), ts=ts, order_id=f"CLS-{position.id}",
-                  filled_price=round(px, spec.digits), lots=position.lots,
+                  filled_price=round(px, spec.digits), lots=lots,
                   commission=round(commission, 4), broker="sim", account=self.account_id,
-                  raw={"reason": reason, "pnl": round(pnl - commission, 2)})
+                  raw={"reason": reason, "pnl": round(pnl - commission, 2),
+                       "partial": partial})
         self.fills.append(ack)
         return ack
 

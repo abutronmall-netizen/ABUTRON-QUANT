@@ -52,7 +52,6 @@ class ExitReason(str, Enum):
     PROP_FLAT = "prop_flatten"
     EOD_FLAT = "eod_flatten"
     KILL_SWITCH = "kill_switch"
-    CONTRACT_EXPIRY = "contract_expiry"
 
 
 _counter = itertools.count(1)

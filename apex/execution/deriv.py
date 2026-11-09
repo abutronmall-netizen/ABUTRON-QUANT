@@ -65,13 +65,12 @@ class DerivBroker:
     def __init__(self, account: str, cfg: Optional[DerivConfig] = None,
                  registry: Optional[SymbolRegistry] = None,
                  api: Optional[DerivAPI] = None, dry_run: bool = True,
-                 multiplier: float = 100.0, duration_min: int = 5,
+                 multiplier: float = 100.0,
                  runner: Optional[AsyncRunner] = None):
         self.account_id = account
         self.cfg = cfg or DerivConfig()
         self.registry = registry or SymbolRegistry()
         self.multiplier = multiplier
-        self.duration_min = duration_min
         self.dry_run = dry_run
         self._runner = runner or AsyncRunner()
         self.api = api  # injectable for tests
@@ -181,8 +180,17 @@ class DerivBroker:
                    raw={"contract_id": buy["contract_id"], "stake": stake,
                         "payout": buy.get("payout")})
 
-    def close(self, position: Position, reason: str, price: Optional[float] = None) -> Ack:
+    def close(self, position: Position, reason: str, price: Optional[float] = None,
+              volume: Optional[float] = None) -> Ack:
         ts = time.time()
+        if volume is not None and 0 < float(volume) < position.lots - 1e-9:
+            # A multiplier contract is sold whole. Pretending to scale out here
+            # would leave the engine's book believing in a position the broker
+            # still holds in full, so refuse and let the caller close outright.
+            return Ack(ok=False, client_id=new_client_id("close"), ts=ts,
+                       reason="Deriv multiplier contracts cannot be partially closed; "
+                              "close the full position instead",
+                       broker="deriv", account=self.account_id, retryable=False)
         if self.dry_run or self.api is None:
             self._dry_positions.pop(position.id, None)
             return Ack(ok=True, client_id=new_client_id("close"), ts=ts,

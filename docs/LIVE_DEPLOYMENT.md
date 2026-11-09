@@ -100,6 +100,18 @@ What to verify, in order:
 6. **Kill switch works.** `POST /api/control/kill` → positions flat, new orders blocked,
    `re-arm` restores. Test it before you need it.
 
+Item 1-5 are read from the journal automatically:
+
+```bash
+python3 -m apex verify --run runs/deriv --live
+```
+
+It reports PASS/FAIL per item — fills accounted for, systematic slippage bias, P&L vs the equity
+curve, unknown rejection codes, reconciliation discrepancies, unprotected stops, stale pending
+orders and heartbeat freshness. Exit code 1 means a blocker; `--strict` also fails on warnings,
+`--json` is for CI. It cannot test the kill switch (that is item 6, do it by hand) or judge fills
+it has never seen — it grades the evidence, not the market.
+
 Only after all six: set `live_orders: true` and keep `--live`. Start at half the planned risk for
 three trading days.
 
@@ -116,8 +128,15 @@ A desk is judged by what happens at 03:00 when the process dies with a position 
 4. **Check the daily budget survived.** After a loss-halt day, restart: `risk.halt_kind` must still
    be set and `day_trades` must not reset to 0.
 5. **Kill the network** (unplug / firewall the host). Within ~90 s the log must show
-   `feed socket died`, then `reconnect in 2s`, and after restoration `indicators resynced`.
-6. `--boot-policy flatten` is the alternative policy: on start it closes everything the broker
+   `feed socket died`, then `reconnect in 2s`, and after restoration `indicators resynced`. A feed
+   that stays alive but starves you is a different failure: `FeedMonitor` warns with the gap in
+   bars (`3.0-bar gap in the feed`), and a venue clock that is not UTC warns with the offset.
+6. **Kill the process, not the host.** `kill -9` the engine while a position is open, then start the
+   watchdog (`python3 -m apex watchdog --heartbeat runs/live/heartbeat.json --once`). Within 30 s it
+   must report `stale` and write a flatten request. Start the engine again: it must log
+   `watchdog flatten request honoured at boot` and come up **flat**, with risk halted. Release with
+   `POST /api/control/rearm` when you are satisfied.
+7. `--boot-policy flatten` is the alternative policy: on start it closes everything the broker
    holds. Use it when you would rather be flat than adopted.
 
 ```bash
@@ -150,6 +169,39 @@ MT5 timestamps arrive in **broker server time**. The adapter detects the offset 
 windows and the prop day boundary are correct. Pin it if you prefer:
 `"mt5_server_offset_hours": 2` in config. Verify on the dashboard: a tick must never appear in the
 future, and the prop day must reset at your firm's hour, not eight hours early.
+
+## 3e. Alerting and the watchdog
+
+An engine that halts at 02:00 and tells nobody is a closed shop.
+
+```bash
+python3 -m apex serve --mode deriv --config config/deriv_prop.json --live \
+  --heartbeat runs/live/heartbeat.json --alert-webhook "$APEX_ALERT_WEBHOOK"
+
+# second process, own service unit (deploy/apex-watchdog.service)
+python3 -m apex watchdog --heartbeat runs/live/heartbeat.json \
+  --stale 30 --interval 5 --webhook "$APEX_ALERT_WEBHOOK"
+```
+
+Channels are configured in the JSON config (webhook and/or SMTP):
+
+```json
+"alerts": {
+  "webhook_url": "",
+  "smtp_host": "", "smtp_port": 587,
+  "smtp_user": "", "smtp_password": "",
+  "smtp_to": ["desk@example.com"],
+  "min_interval_s": 60
+}
+```
+
+Kinds that alert: `risk`, `reconcile`, `error`, `control`, `breach`, `watchdog`. Sends are
+throttled per kind, timeout quickly and never raise into the trading loop.
+
+The watchdog is the only component that can act on a dead engine. It **never opens a trade**: on a
+stale heartbeat it alerts, writes a flatten request, and — only when started with `--live` and a
+broker mode — closes what the broker actually holds. A restart after a crash therefore cannot
+silently inherit unprotected positions: the request is honoured *before* adoption.
 
 ## 4. Operations
 

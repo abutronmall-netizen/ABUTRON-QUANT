@@ -65,6 +65,16 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def risk_from(cfg: dict) -> RiskConfig:
     data = {k: v for k, v in (cfg.get("risk") or {}).items()
             if k in RiskConfig.__dataclass_fields__}
+    sessions = data.get("session_hours")
+    if isinstance(sessions, dict):
+        clean = {}
+        for key, value in sessions.items():
+            try:
+                lo, hi = int(value[0]), int(value[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            clean[str(key)] = (max(0, lo), min(24, hi))
+        data["session_hours"] = clean
     return RiskConfig(**data)
 
 

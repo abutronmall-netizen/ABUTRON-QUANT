@@ -103,7 +103,11 @@ class Store:
                 (order.client_id, ack.ts, order.broker, order.account, order.symbol,
                  order.side.value, order.lots, order.strategy, 1 if ack.ok else 0,
                  ack.filled_price, ack.reason,
-                 json.dumps({"kind": order.kind.value, "sl": order.sl, "tp": order.tp,
+                 json.dumps({"kind": order.kind.value, "price": order.price,
+                             "side": order.side.value, "symbol": order.symbol,
+                             "broker": order.broker, "account": order.account,
+                             "requested_lots": order.lots,
+                             "sl": order.sl, "tp": order.tp,
                              "tag": order.tag, "meta": order.meta}, default=str),
                  json.dumps({"order_id": ack.order_id, "retryable": ack.retryable}, default=str)))
             self.conn.commit()
@@ -187,6 +191,54 @@ class Store:
             rows = self.conn.execute(
                 "SELECT status, COUNT(*) c FROM signals WHERE ts >= ? GROUP BY status", (since,)).fetchall()
         return {r["status"]: r["c"] for r in rows}
+
+    # ------------------------------------------------------------------ #
+    # maintenance: a journal that grows forever is a journal nobody backs up
+    # ------------------------------------------------------------------ #
+    def size_bytes(self) -> int:
+        try:
+            return os.path.getsize(self.path)
+        except OSError:
+            return 0
+
+    def prune(self, retention_days: float, now: Optional[float] = None,
+              keep_trades: bool = True) -> dict:
+        """Delete old high-frequency rows, keep the trade record.
+
+        `equity` is one row per second per account and `signals` one row per bar
+        per symbol: those dominate the file. Trades and runtime state are kept
+        unless `keep_trades=False`, because they are what the audit trail and
+        the prop-day accounting are made of.
+        """
+        if retention_days <= 0:
+            return {"pruned": 0, "skipped": True}
+        cutoff = (now if now is not None else time.time()) - retention_days * 86400.0
+        counts = {}
+        with self._lock, self.conn:
+            for table in ("equity", "signals", "events"):
+                cur = self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+                counts[table] = cur.rowcount or 0
+            if not keep_trades:
+                cur = self.conn.execute("DELETE FROM trades WHERE closed_ts < ?", (cutoff,))
+                counts["trades"] = cur.rowcount or 0
+        counts["retention_days"] = retention_days
+        counts["cutoff"] = cutoff
+        return counts
+
+    def vacuum(self) -> dict:
+        """Reclaim space and refresh statistics. Safe to run at startup."""
+        before = self.size_bytes()
+        try:
+            with self._lock:
+                self.conn.execute("PRAGMA optimize")
+                self.conn.execute("VACUUM")
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            ok, err = True, ""
+        except Exception as exc:              # VACUUM fails inside a transaction
+            ok, err = False, f"{type(exc).__name__}: {exc}"
+        after = self.size_bytes()
+        return {"ok": ok, "error": err, "before": before, "after": after,
+                "reclaimed": max(0, before - after)}
 
     # ------------------------------------------------------------------ #
     def metrics(self, since: float = 0.0) -> dict[str, Any]:

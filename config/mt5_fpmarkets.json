@@ -33,7 +33,23 @@
     "cooldown_after_loss_s": 240,
     "max_spread_atr": 0.3,
     "session_start_utc": 7,
-    "session_end_utc": 19
+    "session_end_utc": 19,
+    "max_heat_pct": 1.5,
+    "max_group_heat_pct": 1.0,
+    "session_hours": {
+      "XAUUSD": [
+        7,
+        20
+      ],
+      "metals": [
+        7,
+        20
+      ],
+      "us_index": [
+        13,
+        20
+      ]
+    }
   },
   "news_calendar": "",
   "boot_policy": "adopt",
@@ -42,5 +58,11 @@
   "dashboard": {
     "host": "127.0.0.1",
     "port": 8000
+  },
+  "heartbeat_path": "runs/live/heartbeat.json",
+  "db_retention_days": 14,
+  "alerts": {
+    "webhook_url": "",
+    "min_interval_s": 60
   }
 }

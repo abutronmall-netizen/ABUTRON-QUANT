@@ -154,6 +154,24 @@ For each closed trade, every agent with |score| ≥ 0.05 that voted in the trade
                          every 30 s: router.reconcile(engine.positions)
 ```
 
+Around that loop sit four things that exist only because the loop can fail:
+
+```
+  heartbeat.json ──▶ Watchdog (separate process)
+                       stale → alert → flatten request ──▶ honoured at next boot
+  journal ─────────▶ apex verify    (§3 of the deployment checklist, mechanically)
+  events ──────────▶ Notifier       (webhook/SMTP, throttled per kind)
+  ticks/bars ──────▶ FeedMonitor    (bar gaps, venue clock drift)
+```
+
+`PendingBook` closes the last hole in the order path: an order the venue accepted but did not fill
+is risk, so it is tracked with an expiry, polled through the adapter's `order_status`, adopted as a
+real position when it fills and cancelled when it goes stale. `EngineConfig.scale_out_r` lets a
+position give back part of itself at a target without ending the trade; a partial close realises
+P&L and shrinks `pos.lots` and `risk_money` proportionally. Aggregate risk is capped in money
+(`max_heat_pct`, `max_group_heat_pct`) because a position count cannot see the difference between
+four 0.5% trades and four 4% trades.
+
 Optional reviewer: `OllamaReviewer` is called *after* risk and prop have sized a trade, receives
 the candidate, the lots and the agent votes, and can only return "allow" or "block". The engine
 itself enforces the configured mode (advisory mode cannot block), and every failure path fails
@@ -166,7 +184,14 @@ Design rules enforced here:
   reverse without an alert.
 * **State is durable or it does not exist.** Anything that changes a limit (halt, day counters,
   prop phase) is written to `runtime_state` on save and restored before the first bar.
-* **A silent feed is a dead feed.** Liveness is message recency, not socket state.
+* **A silent feed is a dead feed.** Liveness is message recency, not socket state — and a live
+  feed that starves you is also a failure, so gaps and clock drift are measured, not assumed.
+* **An alarm that always fires is an alarm nobody reads.** Reconciliation keys on
+  `(symbol, ticket)`, not on the broker label: the label differs between the engine's route name
+  and a paper adapter's own name, and that mismatch once made every paper position look like a
+  discrepancy.
+* **The watchdog is not the engine.** It cannot open risk, only reduce it, and it runs as its own
+  process precisely because the failure it handles is "the engine is gone".
 * **Auth is on the mutation surface only.** Reads stay open for the dashboard; POSTs need a token
   and a same-origin request.
 

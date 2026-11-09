@@ -1,0 +1,31 @@
+# Companion to apex.service. Runs as its own process so it survives the engine.
+#
+#   sudo cp deploy/apex-watchdog.service /etc/systemd/system/
+#   sudo systemctl enable --now apex-watchdog
+#
+# It never opens a trade. On a stale heartbeat it alerts, writes a flatten
+# request the engine honours at boot, and - only with --live - closes what the
+# broker actually holds.
+[Unit]
+Description=ABUTRON QUANT watchdog (heartbeat monitor)
+After=network-online.target apex.service
+Wants=apex.service
+
+[Service]
+Type=simple
+User=apex
+WorkingDirectory=/opt/abutron-quant
+EnvironmentFile=-/etc/apex/apex.env
+ExecStart=/usr/bin/python3 -m apex watchdog \
+  --run /var/lib/apex/live \
+  --heartbeat /var/lib/apex/live/heartbeat.json \
+  --stale 30 --interval 5 --mode none
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/apex
+
+[Install]
+WantedBy=multi-user.target

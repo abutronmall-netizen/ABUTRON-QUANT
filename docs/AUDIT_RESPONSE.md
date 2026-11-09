@@ -183,6 +183,31 @@ second class: failures that look like success from the dashboard.
 
 ---
 
+## Phase 3 — the gaps that only show up when you leave it running (v2.3.0)
+
+| Gap | Why it mattered | Fix | Test |
+| --- | --- | --- | --- |
+| An accepted-but-unfilled order was forgotten | It can fill hours later, unmanaged, next to a second entry on the same symbol | `PendingBook` + `order_status`/`cancel`; late fills become managed positions, stale ones are cancelled | `test_late_fill_becomes_a_managed_position` |
+| Local-only stops died with the process | Deriv cannot modify a contract, so a crash leaves the broker's original stop and no watchdog | Heartbeat file + `apex watchdog`; a stale heartbeat writes a flatten request honoured *before* adoption | `test_engine_honours_a_flatten_request` |
+| Halts and breaches reached only sqlite | The desk stops and nobody knows | `apex/alerts.py`: webhook/SMTP, per-kind throttle, never blocks | `test_webhook_posts_json_and_never_raises` |
+| Demo validation was a human checklist | "Validated" was an opinion | `apex verify` grades fills, slippage bias, P&L, rejections, reconciliation, stops, pending age, heartbeat | `tests/test_ops.py::TestVerify` |
+| `close()` was all-or-nothing | No scale-outs: winners were exited whole or not at all | `volume=` through port/router/engine; Deriv refuses partials instead of pretending | `test_partial_close_keeps_the_position_with_less_lots` |
+| Only position *counts* were capped | Four 4% trades passed the same check as four 0.5% trades | `max_heat_pct`, `max_group_heat_pct` in money | `test_heat_cap_blocks_the_fifth_overlapping_risk` |
+| One global session window | FX, metals and indices do not share hours | `session_hours` per symbol or correlation group, global as fallback | `test_symbol_session_overrides_the_global_window` |
+| Journal grew without bound | A per-second equity table nobody prunes becomes an unbackupable file | `apex prune`, `--db-retention-days`, `VACUUM`; trades are kept | `test_prune_keeps_trades_and_drops_high_frequency_rows` |
+| Two more silent feed failures | A live socket can still starve bars or report a non-UTC clock | `FeedMonitor`: gap size in bars, drift with the offset | `test_gap_in_bars_is_detected` |
+
+Two defects were found *by* this work, both of the "alarm fatigue" kind:
+
+* `router.reconcile` compared broker labels as well as tickets, so **every paper position** was
+  reported as both `missing_at_broker` and `unknown_at_engine`. A reconciliation alarm that always
+  fires is worse than none: it teaches the operator to ignore the one that matters. Keys are now
+  `(symbol, ticket)`, with a new `lots_mismatch` comparison.
+* `Store.record_order` never persisted the requested price, so slippage could not be measured from
+  the journal at all — the audit's "prices agree" step was unanswerable. It is recorded now.
+
+---
+
 ## What was deliberately **not** built
 
 * A second "research" strategy path (that is how the original divergence started).
