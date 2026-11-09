@@ -158,7 +158,7 @@ class LiveRunner:
     # ------------------------------------------------------------------ #
     def _on_engine_event(self, kind: str, message: str) -> None:
         """Forward only the events an operator must not miss."""
-        if kind in ("risk", "reconcile", "error", "control", "warn"):
+        if kind in ("risk", "reconcile", "error", "control", "feed", "warn"):
             self.notifier.from_event(kind, message)
 
     def heartbeat(self) -> dict:
@@ -626,7 +626,7 @@ class FeedMonitor:
         if gap > self.max_gap_bars:
             self.stats["gaps"] += 1
             self.stats["max_gap_bars"] = max(self.stats["max_gap_bars"], round(gap, 2))
-            self._event("warn", f"{symbol}: {gap:.1f}-bar gap in the feed "
+            self._event("feed", f"{symbol}: {gap:.1f}-bar gap in the feed "
                                 f"({(float(bar_ts) - prev) / 60:.1f} min without a close)")
             return gap
         return None
@@ -645,7 +645,7 @@ class FeedMonitor:
         if abs(drift) > self.drift_warn_s and self.now() - self.last_drift_warn > 300:
             self.last_drift_warn = self.now()
             self.stats["drift_warnings"] += 1
-            self._event("warn", f"venue clock is {drift:+.0f}s from local UTC "
+            self._event("feed", f"venue clock is {drift:+.0f}s from local UTC "
                                 f"(session windows and stops use UTC)")
             return drift
         return None

@@ -24,7 +24,8 @@ from email.message import EmailMessage
 from typing import Callable, Optional
 
 #: event kinds worth waking someone up for
-DEFAULT_KINDS = ("risk", "reconcile", "error", "control", "breach", "watchdog")
+DEFAULT_KINDS = ("risk", "reconcile", "error", "control", "breach", "watchdog",
+                 "feed")
 
 
 @dataclass
