@@ -57,8 +57,13 @@ simulator check until real orders exist — the panel says so instead of implyin
 ### System — `/system`
 Deployment state: `apex verify` checklist (fills, prices, P&L, rejections, reconciliation, kill
 switch, stops, pending orders, heartbeat), safety flags (boot policy, persistence, reconciliation
-age, local-only stops, news blackout), broker router, accounts, instrument states, and the operator
-token / control buttons.
+age, local-only stops, news blackout), broker router, accounts, **books** (which venue each symbol
+book trades on, its account, whether it is transmitting or paper, and its universe), instrument
+states, and the operator token / control buttons.
+
+The **Books** card is what makes a multi-venue run legible: one row per broker book, `live orders`
+or `paper`, the account the venue reported, and the symbols it is allowed to trade. The line under
+it names the venues actually running, or says plainly that every book is simulated at the touch.
 
 ---
 

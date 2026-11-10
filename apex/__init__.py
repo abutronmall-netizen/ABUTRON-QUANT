@@ -3,4 +3,4 @@
 Deriv synthetics and FP Markets MT5 through one router, one risk engine, one
 prop-firm rule guard and one journal.
 """
-__version__ = "2.5.2"
+__version__ = "2.6.0"

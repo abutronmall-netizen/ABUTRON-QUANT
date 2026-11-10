@@ -47,10 +47,13 @@ class TestDefaultsUseTheUniverse(unittest.TestCase):
                          ["R_10", "R_25", "R_50", "R_75", "R_100"])
 
     def test_cli_signals_default_is_the_curve(self):
-        from apex.cli import build_parser
+        """`--symbols` no longer hard-codes the deriv list for every broker, so the
+        guarantee now lives in the book that is actually built."""
+        from apex.cli import _book_for, build_parser
         args = build_parser().parse_args(["serve", "--demo"])
-        self.assertIn("R_10", args.symbols)
-        self.assertIn("R_100", args.symbols)
+        self.assertIsNone(args.symbols)
+        book = _book_for(args, "deriv")
+        self.assertEqual(book["deriv"], ["R_10", "R_25", "R_50", "R_75", "R_100"])
 
     def test_optimizer_default(self):
         from apex.research.optimize import SweepRequest

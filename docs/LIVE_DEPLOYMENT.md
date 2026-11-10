@@ -58,12 +58,58 @@ the dashboard.
 
 ---
 
+## 1b. Rehearse the adapter before you trust it (no account needed)
+
+```bash
+python3 -m apex rehearse            # deriv, ~0.1 s, exit 0 = pass
+python3 -m apex rehearse --json     # the same as a machine-readable report
+```
+
+This starts a WebSocket venue on loopback that answers the documented Deriv v3 subset and drives
+the **production** `DerivBroker` across it with `dry_run=False`: handshake, authorize, balance,
+a tick subscription, `proposal` → `buy` → `portfolio` → `sell`, the SL/TP fields on the proposal,
+and the adapter's documented refusal to modify a multiplier contract. Report:
+`runs/rehearsal/rehearsal.json`.
+
+What it proves: framing, request correlation, the submit path, portfolio → position mapping and the
+close path. What it does **not** prove: that Deriv's servers answer like this one. That is what §3
+is for, and no amount of local testing replaces it. The report says so in its own `caveat` field.
+
+MT5 cannot be rehearsed in-process — the adapter talks to a terminal through the MetaTrader5 package
+on Windows. `apex rehearse --venue mt5` exits 2 and says exactly that instead of pretending.
+
+---
+
 ## 2. Dry run (no orders leave the process)
 
 ```bash
 python3 -m apex serve --mode deriv --config config/deriv_prop.json --prop ftmo_2step
 python3 -m apex serve --mode mt5   --config config/mt5_fpmarkets.json
+
+# both venues at once, one engine, one risk budget, one journal
+python3 -m apex serve --venue deriv --venue mt5 --live \
+    --symbols deriv:R_10,R_25,R_50 mt5:EURUSD,XAUUSD \
+    --max-open 4 --config config/deriv_prop.json
 ```
+
+### Several venues, one desk
+
+`--venue` may be repeated. Each venue gets its own feed loop (Deriv is asyncio, MT5 polls the
+terminal) in its own thread; the engine, router, risk budget, prop guard, kill switch and journal
+are shared. A position on one venue counts against the other's heat, because `portfolio_heat`,
+`max_open_positions` and the daily stop are properties of the desk, not of a broker.
+
+Rules the runner enforces rather than documents:
+
+* **one symbol, one broker.** The engine keeps one indicator/quote/position state per symbol, so the
+  same name on two venues is refused at startup instead of fusing two instruments;
+* **each venue gets its own universe.** MT5 refuses Deriv synthetics by name (`R_*`, `1HZ*`,
+  `BOOM*`, `CRASH*`, `JD*`) with an actionable message, because a demo that looks connected and
+  quotes nothing is worse than a clear refusal;
+* **a venue with no symbols is announced**, not silently left idle;
+* **a dying venue loop is journalled** (`<venue> venue stopped: …`) and does not take the other
+  venue down with it;
+* `--max-open N` sets the concurrency ceiling across *all* venues (default: the risk config, 4).
 
 With `live_orders: false` (default), the adapters simulate fills. Market data is real; orders are
 not transmitted. Use this to verify:

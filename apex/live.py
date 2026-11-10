@@ -58,6 +58,7 @@ class LiveConfig:
     mt5_server: str = ""
     mt5_path: str = ""
     live_orders: bool = False                 # must be explicitly true to trade
+    venues: list[str] = field(default_factory=list)   # live venues to run together
     warmup_bars: int = 80
     preload_bars: int = 0          # paper mode: replay N bars so the desk opens with history
     bar_seconds: float = 3.0       # wall-clock seconds per bar (demo pacing)
@@ -77,6 +78,28 @@ class LiveConfig:
     alerts: dict = field(default_factory=dict)     # see apex/alerts.py
     db_retention_days: float = 0.0                 # 0 keeps everything
     heartbeat_path: str = ""                        # watchdog heartbeat file
+    max_open_positions: Optional[int] = None        # None -> risk config default
+
+    # ------------------------------------------------------------------ #
+    def live_venues(self) -> list[str]:
+        """The venues this process will actually trade on.
+
+        One engine, one risk budget, one journal - several venues feeding it.
+        ``mode="multi"`` (or an explicit ``venues`` list) runs Deriv and MT5 at
+        the same time; paper mode never opens a venue.
+        """
+        if self.mode == "paper":
+            return []
+        wanted = list(self.venues or [])
+        if self.mode in ("deriv", "mt5") and self.mode not in wanted:
+            wanted.insert(0, self.mode)
+        elif self.mode == "multi" and not wanted:
+            wanted = ["deriv", "mt5"]
+        out: list[str] = []
+        for v in wanted:
+            if v in ("deriv", "mt5") and v not in out:
+                out.append(v)
+        return out
 
 
 class LiveRunner:
@@ -115,6 +138,10 @@ class LiveRunner:
         self.strategy = StrategyProfile.preset(cfg.strategy)
         self.strategy.entry_tf = cfg.tf
         self.risk_cfg = cfg.risk
+        if cfg.max_open_positions:
+            # Concurrency ceiling across every venue: two brokers means two books
+            # of open risk, and the portfolio limits must see both.
+            self.risk_cfg.max_open_positions = int(cfg.max_open_positions)
 
         if cfg.prop_profile:
             profile = get_profile(cfg.prop_profile)
@@ -168,12 +195,18 @@ class LiveRunner:
         if kind in ("risk", "reconcile", "error", "control", "feed", "warn"):
             self.notifier.from_event(kind, message)
 
+    def _account_for(self, broker: str) -> str:
+        port = self.brokers.get(broker)
+        return str(getattr(port, "account_id", "") or "")
+
     def heartbeat(self) -> dict:
         now = time.time()
         return {
             "ts": now,
             "pid": os.getpid(),
             "mode": self.cfg.mode,
+            "venues": self.cfg.live_venues(),
+            "books": {b: list(syms) for b, syms in self.cfg.symbols_by_broker.items()},
             "live_orders": self.cfg.live_orders,
             "session_start": self.session_start,
             "killed": self.router.killed,
@@ -255,37 +288,73 @@ class LiveRunner:
     # ------------------------------------------------------------------ #
     def _build_brokers(self) -> None:
         cfg = self.cfg
-        if cfg.mode == "deriv":
-            broker = DerivBroker(
-                account="DERIV-LIVE", cfg=DerivConfig(app_id=cfg.deriv_app_id, token=cfg.deriv_token),
-                registry=self.registry, dry_run=not cfg.live_orders)
-            broker.connect()
-            self.deriv_api = broker.api
-            self.brokers["deriv"] = broker
-            self.routes.append(Route(broker="deriv", account=broker.account_id, port=broker,
-                                     symbols=cfg.symbols_by_broker.get("deriv", []),
-                                     label="Deriv synthetics"))
-            self.feed = DerivFeed(broker.api, cfg.symbols_by_broker.get("deriv", []))
-        elif cfg.mode == "mt5":
-            broker = MT5Broker(account="FP-MARKETS",
-                               cfg=MT5Config(login=cfg.mt5_login, password=cfg.mt5_password,
-                                             server=cfg.mt5_server, path=cfg.mt5_path,
-                                             server_utc_offset_hours=cfg.mt5_server_offset_hours),
-                               registry=self.registry, dry_run=not cfg.live_orders)
-            broker.connect()
-            self.brokers["mt5"] = broker
-            self.routes.append(Route(broker="mt5", account=broker.account_id, port=broker,
-                                     symbols=cfg.symbols_by_broker.get("mt5", []),
-                                     label="FP Markets MT5"))
-            self.mt5_feed = MT5Feed(broker.conn, cfg.symbols_by_broker.get("mt5", []), tf=cfg.tf)
-        else:
+        venues = cfg.live_venues()
+        if not venues:                                    # paper: every broker book is simulated
+            multi = len(cfg.symbols_by_broker) > 1
             for broker, symbols in cfg.symbols_by_broker.items():
+                # One simulated account per book, so the dashboard can tell which
+                # venue a paper fill came from once both books trade together.
+                account = f"PAPER-{broker.upper()}" if multi else "PAPER-001"
                 sim = SimBroker(self.registry, SimConfig(initial_balance=cfg.initial_balance,
-                                                         seed=cfg.seed), account="PAPER-001")
+                                                         seed=cfg.seed), account=account)
                 self.brokers[broker] = sim
                 self.routes.append(Route(broker=broker, account=sim.account_id, port=sim,
                                          symbols=symbols, label="Paper"))
             self.feed = _PaperFeed(cfg)
+            self._check_symbol_universe()
+            return
+
+        for venue in venues:
+            symbols = cfg.symbols_by_broker.get(venue, [])
+            if not symbols:
+                # A venue with no symbols still needs a route for reconciliation,
+                # but it can never trade - say so instead of looking connected.
+                self.store.record_event("warn", f"{venue} venue has no symbols configured")
+            if venue == "deriv":
+                broker = DerivBroker(
+                    account="DERIV-LIVE",
+                    cfg=DerivConfig(app_id=cfg.deriv_app_id, token=cfg.deriv_token),
+                    registry=self.registry, dry_run=not cfg.live_orders)
+                broker.connect()
+                self.deriv_api = broker.api
+                self.brokers["deriv"] = broker
+                self.routes.append(Route(broker="deriv", account=broker.account_id, port=broker,
+                                         symbols=symbols, label="Deriv synthetics"))
+                self.feed = DerivFeed(broker.api, symbols)
+            elif venue == "mt5":
+                broker = MT5Broker(
+                    account="FP-MARKETS",
+                    cfg=MT5Config(login=cfg.mt5_login, password=cfg.mt5_password,
+                                  server=cfg.mt5_server, path=cfg.mt5_path,
+                                  server_utc_offset_hours=cfg.mt5_server_offset_hours),
+                    registry=self.registry, dry_run=not cfg.live_orders)
+                broker.connect()
+                self.brokers["mt5"] = broker
+                self.routes.append(Route(broker="mt5", account=broker.account_id, port=broker,
+                                         symbols=symbols, label="FP Markets MT5"))
+                self.mt5_feed = MT5Feed(broker.conn, symbols, tf=cfg.tf)
+        self._check_symbol_universe()
+
+    def _check_symbol_universe(self) -> None:
+        """One strategy state per symbol, so a symbol may live on one venue only.
+
+        The engine keys indicators, quotes and positions by symbol. The same name
+        on two brokers would silently fuse two different instruments into one
+        state - the exact ambiguity this desk exists to avoid. Refuse at startup.
+        """
+        seen: dict[str, str] = {}
+        clashes: list[str] = []
+        for broker, symbols in self.cfg.symbols_by_broker.items():
+            for sym in symbols:
+                other = seen.get(sym)
+                if other is not None and other != broker:
+                    clashes.append(f"{sym} ({other} and {broker})")
+                seen[sym] = broker
+        if clashes:
+            raise ValueError(
+                "the same symbol is configured on more than one broker: "
+                + ", ".join(clashes)
+                + " - the engine keeps one state per symbol; give each venue its own universe")
 
     # ------------------------------------------------------------------ #
     def warmup(self) -> None:
@@ -320,13 +389,20 @@ class LiveRunner:
             self.engine.flatten_all("preload_end") if False else None
 
     def _history(self, broker: str, symbol: str, n: int):
-        if self.cfg.mode == "deriv":
+        """Warmup candles for one symbol, asked of the venue that will trade it.
+
+        Only a venue that is actually running is asked: in paper mode ``broker``
+        still names the book the symbol belongs to, and a desk demoing on a
+        laptop with no internet must not stall on a Deriv handshake.
+        """
+        live = broker in self.cfg.live_venues()
+        if live and broker == "deriv":
             try:
                 return fetch_candles_sync(symbol, 300, n, app_id=self.cfg.deriv_app_id,
                                           token=self.cfg.deriv_token)
             except Exception as exc:
                 self.store.record_event("warn", f"deriv history failed for {symbol}: {exc}")
-        if self.cfg.mode == "mt5" and self.mt5_feed is not None:
+        if live and broker == "mt5" and self.mt5_feed is not None:
             try:
                 return self.mt5_feed.conn.rates(symbol, self.cfg.tf, n)
             except Exception as exc:
@@ -342,12 +418,38 @@ class LiveRunner:
 
     # ------------------------------------------------------------------ #
     def run(self) -> None:
-        if self.cfg.mode == "deriv":
-            asyncio.run(self._run_deriv())
-        elif self.cfg.mode == "mt5":
-            self._run_mt5()
-        else:
+        """Run every configured venue against the one engine.
+
+        Each venue gets its own loop (Deriv is asyncio, MT5 is a poll) and its
+        own thread; the engine, the router, the risk budget and the journal are
+        shared, so a position on one venue counts against the other's heat.
+        """
+        venues = self.cfg.live_venues()
+        if not venues:
             self._run_paper()
+            return
+        if len(venues) == 1:
+            asyncio.run(self._run_deriv()) if venues[0] == "deriv" else self._run_mt5()
+            return
+
+        threads: list[threading.Thread] = []
+        for venue in venues:
+            target = self._run_deriv if venue == "deriv" else self._run_mt5
+            t = threading.Thread(target=self._venue_main, args=(venue, target),
+                                 daemon=True, name=f"apex-{venue}")
+            threads.append(t)
+            t.start()
+        self.store.record_event("info", "venues running: " + ", ".join(venues))
+        while not self._stop.is_set() and any(t.is_alive() for t in threads):
+            self._stop.wait(0.5)
+
+    def _venue_main(self, venue: str, target) -> None:
+        """A venue loop that dies must say so, not take the other venue with it."""
+        try:
+            target()
+        except Exception as exc:
+            self.store.record_event(
+                "error", f"{venue} venue stopped: {type(exc).__name__}: {exc}")
 
     def start_background(self) -> None:
         self._thread = threading.Thread(target=self.run, daemon=True, name="apex-live")
@@ -511,6 +613,10 @@ class LiveRunner:
     def snapshot(self) -> dict:
         snap = self.engine.snapshot()
         snap["mode"] = self.cfg.mode
+        snap["venues"] = self.cfg.live_venues()
+        snap["books"] = {b: {"symbols": list(syms), "account": self._account_for(b),
+                             "live": bool(b in self.cfg.live_venues() and self.cfg.live_orders)}
+                         for b, syms in self.cfg.symbols_by_broker.items()}
         snap["live_orders"] = self.cfg.live_orders
         snap["session_start"] = self.session_start
         # Session-scoped metrics: the dashboard must describe what the operator is
@@ -557,6 +663,12 @@ class LiveRunner:
 
     def shutdown(self) -> None:
         self.stop()
+        # Let the venue loops finish their current bar before the journal closes:
+        # closing underneath a running loop is what produced a
+        # "Cannot operate on a closed database" traceback on every clean stop.
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
         self._write_heartbeat(force=True)
         if self.ticks is not None:
             try:

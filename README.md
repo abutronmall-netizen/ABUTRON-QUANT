@@ -66,8 +66,18 @@ python3 -m apex slippage --run runs/live
 python3 -m apex backup --run runs/live --out backups --keep 14
 python3 -m apex restore --backup backups/apex-<stamp>.db --db runs/live/apex.db --force
 
-# 8. tests
-python3 -m unittest discover -s tests      # 309 tests
+# 8. rehearse the live Deriv adapter against a local venue (no account needed)
+python3 -m apex rehearse
+#    real socket, real handshake, proposal -> buy -> portfolio -> sell on the
+#    production adapter with dry_run=False; proves the wire path, not Deriv itself
+
+# 9. two venues, one engine, one risk budget
+python3 -m apex serve --venue deriv --venue mt5 --live \
+    --symbols deriv:R_10,R_25 mt5:EURUSD,XAUUSD
+#    (MT5 needs a Windows host; the venue with no terminal is refused at startup)
+
+# 10. tests
+python3 -m unittest discover -s tests      # 324 tests
 ```
 
 ---
@@ -116,7 +126,7 @@ are **not** a performance claim.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `python3 -m unittest discover -s tests` | **309 tests pass** in ~18 s |
+| Test suite | `python3 -m unittest discover -s tests` | **324 tests pass** in ~19 s |
 | Lint contract | `ruff check apex tests` (F,E9,B,I; CI runs it) | clean |
 | Same seed, same answer | `backtest --bars 3000 --seed 7`, twice | identical metrics (fixed tape anchor, `backtest.ANCHOR_TS`) |
 | Default book, seed 7 | `backtest --bars 3000 --seed 7` | 48 trades, win 22.9%, P&L **−667.94**, PF 0.49, avgR −0.29, maxDD 8.23% → governor halts |
@@ -280,6 +290,8 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | --- | --- |
 | `apex serve --demo` | paper engine + seven portals on `:8000` (see [The portals](#the-portals)) |
 | `apex serve --mode deriv\|mt5` | live-data engine, dry-run unless `--live`; `--token`, `--news`, `--boot-policy` |
+| `apex serve --venue deriv --venue mt5` | **several venues on one engine**: one router, one risk budget, one journal |
+| `apex rehearse` | drive the real Deriv adapter over a loopback venue (handshake, proposal, buy, portfolio, sell) |
 | `apex backtest` | event-driven backtest on the production engine |
 | `apex sweep` | parameter sweep with walk-forward reporting |
 | `apex propsim` | challenge pass-rate simulation over many seeds |
@@ -297,7 +309,11 @@ Details and the maths: [`docs/PROP_FIRM_PLAYBOOK.md`](docs/PROP_FIRM_PLAYBOOK.md
 | `apex prune --db runs/live/apex.db --days 14` | bound journal growth (keeps trades) |
 
 `--prop none` disables the guard; `--prop config/my_firm.json` loads your own terms.
-`--symbols` accepts `R_10,R_50` or `R10 R50` and defaults to the five volatility indices;
+`--symbols` accepts `R_10,R_50`, `R10 R50`, or per venue `deriv:R_10,R_25 mt5:EURUSD,USDJPY`;
+each venue defaults to **its own** universe (Deriv: the five volatility indices, MT5: 13 FX,
+metals and indices) — the old behaviour handed the Deriv list to MT5, which cannot quote it.
+A symbol may live on only one broker: the engine keeps one state per symbol and refuses the
+ambiguity at startup rather than trading a fused one.
 `--anchor-ts <epoch>` moves the synthetic tape anchor when you deliberately want a different one.
 
 ## Configuration
@@ -334,7 +350,7 @@ apex/
 docs/                architecture, audit response, prop playbook, deployment, research
 .github/workflows/   CI: tests on 3.10-3.12, doctor, artifact + packaging checks
 deploy/              systemd unit; Dockerfile at the repo root
-tests/               309 unit + integration tests
+tests/               324 unit + integration tests
 ```
 
 ---

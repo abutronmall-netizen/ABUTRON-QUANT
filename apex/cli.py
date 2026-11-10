@@ -27,7 +27,7 @@ from .live import LiveConfig, LiveRunner
 from .prop import PROFILES, plan_for
 from .risk import RiskConfig
 from .store import Store
-from .symbols import DEFAULT_SYMBOLS, parse_symbols
+from .symbols import DEFAULT_SYMBOLS, DEFAULT_SYMBOLS_BY_BROKER, parse_symbols
 from .timeutil import tf_seconds
 
 _tf_seconds = tf_seconds   # backwards-compatible alias
@@ -59,6 +59,61 @@ def _broker_key(args) -> str:
     return "mt5" if getattr(args, "mode", None) == "mt5" else "deriv"
 
 
+def _book_for(args, broker: str) -> dict[str, list[str]]:
+    """The symbol book for one broker key, honouring `--symbols` overrides.
+
+    `--broker both` means two books with two different universes; the Deriv list
+    must not be handed to MT5 (it does not quote synthetics) and vice versa.
+    """
+    plain, per = _symbol_args([args.symbols] if getattr(args, "symbols", None) else None)
+    if plain:
+        book = _symbol_map(broker, plain)
+    elif broker == "both":
+        book = {name: list(syms) for name, syms in DEFAULT_SYMBOLS_BY_BROKER.items()}
+    else:
+        book = {broker: list(DEFAULT_SYMBOLS_BY_BROKER.get(broker, DEFAULT_SYMBOLS))}
+    for name, syms in per.items():
+        book[name] = list(syms)
+    return book
+
+
+def _book_symbols(args, broker: str) -> list[str]:
+    """Flat symbol list for the single-book commands (backtest, sweep, propsim)."""
+    book = _book_for(args, broker)
+    out: list[str] = []
+    for syms in book.values():
+        out.extend(s for s in syms if s not in out)
+    return out
+
+
+def _symbol_args(values) -> tuple[list[str], dict[str, list[str]]]:
+    """Split `--symbols` into a plain list and per-broker overrides.
+
+    `--symbols R_10,R_25`            -> applies to the selected broker
+    `--symbols deriv:R_10 mt5:EURUSD,USDJPY` -> one universe per venue
+    """
+    plain: list[str] = []
+    per: dict[str, list[str]] = {}
+    for chunk in values or []:
+        # whitespace separates groups, commas separate symbols inside a group,
+        # so "deriv:R_10,R_50 mt5:EURUSD" keeps each list with its broker.
+        for group in str(chunk).split():
+            if not group:
+                continue
+            broker, sep, rest = group.partition(":")
+            if sep and broker.strip().lower() in ("deriv", "mt5", "sim"):
+                name = broker.strip().lower()
+                for sym in parse_symbols(rest):
+                    per.setdefault(name, [])
+                    if sym not in per[name]:
+                        per[name].append(sym)
+                continue
+            for sym in parse_symbols(group):
+                if sym not in plain:
+                    plain.append(sym)
+    return plain, per
+
+
 def _symbol_map(broker: str, symbols: list[str]) -> dict[str, list[str]]:
     if broker == "both":
         return {"deriv": [s for s in symbols if s.startswith(("R_", "1HZ", "BOOM", "CRASH", "JD"))],
@@ -76,20 +131,41 @@ def cmd_serve(args) -> int:
     creds = broker_credentials(cfg)
     mode = args.mode or ("paper" if args.demo else cfg["mode"])
     broker_key = _broker_key(args)
-    symbols = _split(args.symbols) if args.symbols else \
-        cfg["symbols_by_broker"].get(broker_key, DEFAULT_SYMBOLS)
+    venues = [v for v in (getattr(args, "venue", None) or []) if v in ("deriv", "mt5")]
+    if venues and (args.demo or args.mode == "paper"):
+        print("[!] --venue runs live venues; drop --demo/--mode paper. For paper on both "
+              "books use --broker both.")
+        return 2
+    if venues:
+        mode = venues[0] if len(venues) == 1 else "multi"
+    book = _book_for(args, broker_key)
+    if venues:
+        # Each venue trades the universe that belongs to it unless one was given.
+        given = {k: v for k, v in book.items() if v}
+        book = {v: list(given.get(v, DEFAULT_SYMBOLS_BY_BROKER.get(v, []))) for v in venues}
 
-    if mode == "mt5":
+    live_venues = venues or ([mode] if mode in ("deriv", "mt5") else [])
+    if "mt5" in live_venues:
         from .data.mt5 import mt5_installed
         if not mt5_installed():
-            print("[!] --mode mt5 needs a Windows host, the MetaTrader5 package and a running "
-                  "terminal; neither is available here")
+            print("[!] --mode mt5 / --venue mt5 needs a Windows host, the MetaTrader5 package "
+                  "and a running terminal; neither is available here")
             print("    (pip install MetaTrader5 on Windows, or run the MT5 bridge on a Windows "
                   "host). Use --demo/--mode paper here, or --mode deriv for Deriv synthetics.")
             return 2
+        derivative = {sym for sym in book.get("mt5", [])
+                      if sym.startswith(("R_", "1HZ", "BOOM", "CRASH", "JD"))}
+        if derivative:
+            print("[!] MT5 does not quote Deriv synthetics: "
+                  + ", ".join(sorted(derivative))
+                  + ". Give each venue its own universe, e.g. "
+                    "--symbols deriv:R_10,R_25 --symbols mt5:EURUSD,USDJPY")
+            return 2
     live = LiveConfig(
         mode=mode,
-        symbols_by_broker=_symbol_map(broker_key, symbols),
+        venues=venues,
+        symbols_by_broker=book,
+        max_open_positions=args.max_open,
         tf=args.tf or cfg["tf"],
         strategy=args.strategy or cfg["strategy"],
         prop_profile=(cfg.get("prop_profile") if _prop_arg(args.prop) == "__config__"
@@ -126,7 +202,16 @@ def cmd_serve(args) -> int:
     )
     if mode != "paper" and not args.live:
         print("[!] live-orders OFF: the engine will simulate fills and will not transmit orders.")
-    runner = LiveRunner(live)
+    try:
+        runner = LiveRunner(live)
+    except ValueError as exc:                 # a configuration contradiction, not a stack trace
+        print(f"[!] {exc}")
+        return 2
+    except Exception as exc:                  # an unreachable venue, a bad token, no terminal
+        print(f"[!] could not start {mode} venue(s): {type(exc).__name__}: {exc}")
+        print("    the adapter needs a reachable endpoint and valid credentials; "
+              "`apex rehearse` exercises the same order path against a local venue")
+        return 3
     runner.warmup()
     runner.start_background()
 
@@ -164,8 +249,8 @@ def cmd_serve(args) -> int:
 
 
 def cmd_backtest(args) -> int:
-    symbols = _split(args.symbols)
     broker = _broker_key(args)
+    symbols = _book_symbols(args, broker)
     out = args.out or f"runs/bt_{int(time.time())}"
     risk = RiskConfig()
     if args.risk_pct:
@@ -205,7 +290,7 @@ def cmd_backtest(args) -> int:
 
 def cmd_sweep(args) -> int:
     from .research.optimize import DEFAULT_GRID, SweepRequest, sweep
-    symbols = _split(args.symbols)
+    symbols = _book_symbols(args, _broker_key(args))
     req = SweepRequest(
         symbols_by_broker=_symbol_map(_broker_key(args), symbols),
         bars=args.bars, strategy=args.strategy,
@@ -403,6 +488,27 @@ def cmd_slippage(args) -> int:
     return 0 if report.get("fills") else 2
 
 
+def cmd_rehearse(args) -> int:
+    """Drive a live adapter over a loopback socket; exit non-zero if it fails."""
+    from .rehearsal import as_text, rehearse_deriv
+
+    venue = getattr(args, "venue", None) or "deriv"
+    if venue != "deriv":
+        print(f"[rehearse] {venue} cannot be rehearsed in-process: the MT5 adapter talks to a "
+              "terminal through the MetaTrader5 package on Windows. Use --venue deriv, and "
+              "rehearse MT5 on the Windows host with `apex serve --mode mt5` (dry run) first.")
+        return 2
+    out = args.out or "runs/rehearsal"
+    report = rehearse_deriv(symbol=args.symbol, out_dir=out)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(as_text(report))
+        if report.get("path"):
+            print(f"  report     : {report['path']}")
+    return 0 if report.get("ok") else 1
+
+
 def cmd_backup(args) -> int:
     from .backup import BackupError, create_backup
     try:
@@ -574,7 +680,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp):
         sp.add_argument("--config", default=None, help="JSON config path")
-        sp.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
+        sp.add_argument("--symbols", default=None,
+                        help="symbols for the selected book, or per venue: "
+                             "deriv:R_10,R_25 mt5:EURUSD,USDJPY "
+                             "(default: the venue's own universe)")
         sp.add_argument("--broker", default=None, choices=["deriv", "mt5", "sim", "both"],
                         help="symbol book + venue (default: deriv, or mt5 when --mode mt5)")
         sp.add_argument("--tf", default="M5")
@@ -603,6 +712,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="paper mode: replay N bars at start so the desk opens with history")
     sp.add_argument("--db", default=None)
     sp.add_argument("--live", action="store_true", help="TRANSMIT real orders (requires credentials)")
+    sp.add_argument("--venue", action="append", default=None, choices=["deriv", "mt5"],
+                    help="live venue to run; repeat to run several against one engine "
+                         "(e.g. --venue deriv --venue mt5)")
+    sp.add_argument("--max-open", type=int, default=None,
+                    help="advisory: concurrent open positions across every venue "
+                         "(default: risk config, 4)")
     sp.add_argument("--token", default=None,
                     help="operator token for control endpoints (default: $APEX_DASHBOARD_TOKEN)")
     sp.add_argument("--news", default=None, help="JSON economic calendar for prop blackout windows")
@@ -697,6 +812,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the backtest's entry slippage assumption")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_slippage)
+
+    sp = sub.add_parser("rehearse", help="drive a live adapter over a loopback venue")
+    sp.add_argument("--venue", default="deriv", choices=["deriv", "mt5"],
+                    help="adapter to rehearse (mt5 must run on the Windows host)")
+    sp.add_argument("--symbol", default="R_25", help="instrument to trade in the rehearsal")
+    sp.add_argument("--out", default="runs/rehearsal", help="where to write rehearsal.json")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_rehearse)
 
     sp = sub.add_parser("backup", help="consistent snapshot of the journal (+ manifest)")
     sp.add_argument("--run", default="runs/live")

@@ -3,6 +3,53 @@
 All notable changes to this repository. Versions are internal milestones, not
 released packages.
 
+## 2.6.0 — several venues on one engine, and a live adapter that has touched a socket
+
+Asked for: multi-broker, multi-symbol, multi-trade execution, and a fix for the biggest item on
+the honest-gaps list — that the Deriv order path had only ever run against a fake client object.
+
+**Multi-venue (`--venue deriv --venue mt5`).** `LiveConfig.mode` selected exactly one real venue, so
+"multi-broker" meant paper only. Now the runner takes a `venues` list: each venue gets its own feed
+loop in its own thread (Deriv asyncio, MT5 polling), and they share the engine, the broker router,
+the risk budget, the prop guard, the kill switch and the journal. `--max-open N` is the ceiling
+across every venue, because heat is a property of the desk and not of a broker.
+
+Rules enforced at startup rather than documented and hoped for:
+
+* **one symbol, one broker** — the engine keeps one state per symbol; the same name on two venues
+  raised nothing before and would have fused two instruments into one indicator/position state.
+  It now refuses with the clashing symbols named;
+* **each venue owns its universe** — `--symbols` used to default to the Deriv volatility list for
+  every broker, so `--mode mt5` armed the terminal with `R_10..R_100`, which it cannot quote. The
+  default is now per broker (Deriv: 5 indices, MT5: 13 FX/metals/indices), per-venue overrides are
+  `--symbols deriv:R_10,R_25 mt5:EURUSD,USDJPY`, and MT5 refuses synthetics by name with a message
+  that says what to do;
+* `--venue` with `--demo` is a contradiction and exits 2;
+* a venue whose loop dies is journalled and leaves the other venue running;
+* in paper mode each book now gets its own account id (`PAPER-DERIV`, `PAPER-MT5`) so a fill can be
+  attributed to the book it came from.
+
+**`apex rehearse` — the live adapter, over a socket, with `dry_run=False`.** `apex/rehearsal.py`
+runs a loopback WebSocket venue that answers the documented Deriv v3 subset (authorize, balance,
+ticks, ticks_history, proposal, buy, portfolio, proposal_open_contract, sell), then drives the
+production `DerivBroker` across it: handshake → authorize → balance → tick subscription → `proposal`
+→ `buy` → `portfolio` → `sell`, asserting the SL/TP fields on the proposal and the adapter's
+documented refusal to modify a multiplier contract. Report at `runs/rehearsal/rehearsal.json`.
+
+It proves framing, request correlation, the submit path, portfolio → Position mapping and the close
+path — none of which a fake client object exercises. It does **not** prove that Deriv behaves like
+this server, and the report's `caveat` field says that. `apex rehearse --venue mt5` exits 2 with the
+reason (the adapter needs a Windows terminal) rather than pretending.
+
+**A shutdown race found by the new tests.** `LiveRunner.shutdown()` closed the journal underneath a
+running venue loop; every clean stop could raise `sqlite3.ProgrammingError: Cannot operate on a
+closed database` in the loop thread. Shutdown now joins the loop thread first.
+
+Dashboard: a **Books** card on System (one row per book: venue, paper/live, account, symbol count,
+universe), and `venues`/`books` in `/api/state` and the heartbeat file.
+
+Suite 309 → 324 tests. The rehearsal runs in ~0.1 s and is now a CI step.
+
 ## 2.5.2 — a test that only passed where the work had been done
 
 With the dependency guard fixed, CI reached the test step for the first time

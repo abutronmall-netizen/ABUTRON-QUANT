@@ -1150,6 +1150,23 @@
       </div>
 
       <div class="row g-3">
+        ${card("Books", table(
+          ["Book", "Trades on", "Account", "Symbols", "Universe"],
+          Object.entries(s.books || {}).map(([book, info]) => [
+            esc(book),
+            pill(info.live ? "live orders" : "paper", info.live ? "bad" : "good"),
+            `<span class="mono">${esc(info.account || "—")}</span>`,
+            num((info.symbols || []).length, 0),
+            `<span class="mono small">${esc((info.symbols || []).join(" "))}</span>`,
+          ]), { empty: "no books" }), { cols: "col-12" })}
+        <div class="muted small px-1">
+          ${(s.venues || []).length
+            ? `Live venues running: <span class="mono">${esc((s.venues || []).join(" + "))}</span>. One engine, one risk budget, one journal across all of them.`
+            : "Paper mode: every book is simulated at the touch. Live venues are opt-in (--venue / --live) and each venue still needs a demo account with broker-confirmed fills."}
+        </div>
+      </div>
+
+      <div class="row g-3">
         ${card("Instruments", table(
           ["Symbol", "Name", "Broker", "State", "Bars", "Price"],
           (s.symbols || []).map((x) => [
